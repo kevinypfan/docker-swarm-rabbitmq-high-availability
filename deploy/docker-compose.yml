@@ -1,0 +1,200 @@
+version: "3.9"
+
+services:
+  traefik:
+    image: traefik:v2.10
+    command:
+      - "--api.insecure=true"
+      - "--api.dashboard=true"
+      - "--providers.docker.swarmMode=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.addEntryPointsLabels=true"
+      - "--metrics.prometheus.addServicesLabels=true"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - rabbitmq-network
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  consul:
+    image: consul:1.15
+    command: agent -server -ui -client=0.0.0.0 -bootstrap-expect=1
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - 'CONSUL_LOCAL_CONFIG={"skip_leave_on_interrupt": true}'
+    ports:
+      - "3001:8500"
+      - "8600:8600/udp"
+    networks:
+      - rabbitmq-network
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    hostname: "{{.Service.Name}}-{{.Task.Slot}}.{{.Task.ID}}"
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: test1234
+      RABBITMQ_USE_LONGNAME: "true"
+      RABBITMQ_ERLANG_COOKIE: "SWARM-COOKIE-SECRET-KEY-HERE"
+      RABBITMQ_NODENAME: "rabbit@{{.Service.Name}}-{{.Task.Slot}}.{{.Task.ID}}"
+    configs:
+      - source: rabbitmq_config
+        target: /etc/rabbitmq/rabbitmq.conf
+      - source: rabbitmq_enabled_plugins
+        target: /etc/rabbitmq/enabled_plugins
+    networks:
+      - rabbitmq-network
+    deploy:
+      endpoint_mode: dnsrr
+      replicas: 3
+      update_config:
+        parallelism: 1
+        delay: 30s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 15s
+        max_attempts: 3
+        window: 60s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.rabbitmq.rule=Host(`rabbitmq.swarm-test`)"
+        - "traefik.http.routers.rabbitmq.entrypoints=web"
+        - "traefik.http.services.rabbitmq.loadbalancer.server.port=15672"
+        - "prometheus.metrics.port=15692"
+      resources:
+        limits:
+          cpus: "1"
+          memory: "1g"
+        reservations:
+          cpus: "0.5"
+          memory: "512m"
+
+  prometheus:
+    image: prom/prometheus
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+    ports:
+      - "3002:9090"
+    networks:
+      - rabbitmq-network
+    user: root
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - rabbitmq-network
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  # RabbitMQ Consumer 服務
+  consumer:
+    image: rabbitmq-ha-consumer:latest
+    build:
+      context: ../consumer
+      dockerfile: Dockerfile
+    environment:
+      - RABBITMQ_HOSTS=amqp://admin:test1234@rabbitmq:5672
+      - QUEUE_NAME=test-queue
+      - EXCHANGE_NAME=test-exchange
+      - ROUTING_KEY=test.message
+      - HOSTNAME={{.Service.Name}}-{{.Task.Slot}}
+    networks:
+      - rabbitmq-network
+    depends_on:
+      - rabbitmq
+    deploy:
+      replicas: 3
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256m"
+        reservations:
+          cpus: "0.1"
+          memory: "128m"
+
+  # RabbitMQ Producer 服務
+  producer:
+    image: rabbitmq-ha-producer:latest
+    build:
+      context: ../producer
+      dockerfile: Dockerfile
+    environment:
+      - RABBITMQ_HOSTS=amqp://admin:test1234@rabbitmq:5672
+      - EXCHANGE_NAME=test-exchange
+      - ROUTING_KEY=test.message
+      - HOSTNAME={{.Service.Name}}-{{.Task.Slot}}
+      - PORT=3000
+      - AUTO_SEND=false
+      - AUTO_SEND_INTERVAL=10000
+    networks:
+      - rabbitmq-network
+    depends_on:
+      - rabbitmq
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.producer.rule=Host(`producer.swarm-test`)"
+        - "traefik.http.routers.producer.entrypoints=web"
+        - "traefik.http.services.producer.loadbalancer.server.port=3000"
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256m"
+        reservations:
+          cpus: "0.1"
+          memory: "128m"
+
+networks:
+  rabbitmq-network:
+    driver: overlay
+
+configs:
+  rabbitmq_config:
+    file: ./rabbitmq.conf
+  rabbitmq_enabled_plugins:
+    file: ./enabled_plugins
+  prometheus_config:
+    file: ./prometheus.yml
