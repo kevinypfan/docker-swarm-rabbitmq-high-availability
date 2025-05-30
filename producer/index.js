@@ -2,6 +2,19 @@ const amqp = require('amqplib');
 const express = require('express');
 require('dotenv').config();
 
+// 簡化的日誌設定
+const isDev = process.env.NODE_ENV !== 'production';
+const createSimpleLogger = (component) => {
+  return {
+    info: (msg, data = {}) => console.log(`[INFO] ${component} - ${msg}`, data),
+    error: (msg, data = {}) => console.error(`[ERROR] ${component} - ${msg}`, data),
+    warn: (msg, data = {}) => console.warn(`[WARN] ${component} - ${msg}`, data),
+    debug: (msg, data = {}) => isDev && console.log(`[DEBUG] ${component} - ${msg}`, data)
+  };
+};
+
+const logger = createSimpleLogger('PRODUCER');
+
 class RabbitMQProducer {
     constructor() {
         this.connection = null;
@@ -16,50 +29,73 @@ class RabbitMQProducer {
         this.producerId = process.env.HOSTNAME || `producer-${Math.random().toString(36).substr(2, 9)}`;
         
         // RabbitMQ 連接設定（支援多個節點的 HA）
-        this.rabbitmqHosts = process.env.RABBITMQ_HOSTS ? 
-            process.env.RABBITMQ_HOSTS.split(',') : 
-            ['amqp://admin:test1234@rabbitmq:5672'];
+        this.rabbitmqUrl = process.env.RABBITMQ_URL || process.env.RABBITMQ_HOSTS || "amqp://admin:test1234@localhost:5672";
+        this.rabbitmqHosts = Array.isArray(this.rabbitmqUrl) ? this.rabbitmqUrl : this.rabbitmqUrl.split(",");
             
-        console.log(`🚀 Producer ID: ${this.producerId}`);
-        console.log(`🔄 Exchange: ${this.exchangeName}`);
-        console.log(`🎯 Routing Key: ${this.routingKey}`);
-        console.log(`🌐 RabbitMQ Hosts: ${this.rabbitmqHosts.join(', ')}`);
+        logger.info('Producer initialized', {
+            producerId: this.producerId,
+            exchange: this.exchangeName,
+            routingKey: this.routingKey,
+            hosts: this.rabbitmqHosts
+        });
     }
 
     async connect() {
         try {
-            console.log('🔌 嘗試連接到 RabbitMQ...');
+            logger.info('Attempting to connect to RabbitMQ');
             
-            // 嘗試連接到 RabbitMQ 叢集中的任一節點
-            this.connection = await amqp.connect(this.rabbitmqHosts, {
-                heartbeat: 60,
-                timeout: 10000
-            });
-            
-            console.log('✅ 成功連接到 RabbitMQ');
+            // 簡化連接邏輯 - 先嘗試第一個 host，如果失敗再嘗試其他的
+            let connection = null;
+            let lastError = null;
+
+            for (const host of this.rabbitmqHosts) {
+                try {
+                    logger.debug('Trying to connect', { host });
+                    connection = await amqp.connect(host.trim(), {
+                        heartbeat: 60,
+                        timeout: 10000
+                    });
+                    logger.info('Connected to RabbitMQ', { host });
+                    break;
+                } catch (error) {
+                    logger.warn('Connection failed', { host, error: error.message });
+                    lastError = error;
+                    continue;
+                }
+            }
+
+            if (!connection) {
+                throw lastError || new Error("所有 RabbitMQ 主機連接失敗");
+            }
+
+            this.connection = connection;
             
             this.connection.on('error', (err) => {
-                console.error('❌ RabbitMQ 連接錯誤:', err.message);
+                logger.error('RabbitMQ connection error', { error: err.message });
+                this.channel = null;
+                this.connection = null;
                 this.reconnect();
             });
             
             this.connection.on('close', () => {
-                console.log('🔌 RabbitMQ 連接關閉');
+                logger.warn('RabbitMQ connection closed');
+                this.channel = null;
+                this.connection = null;
                 this.reconnect();
             });
             
             this.channel = await this.connection.createChannel();
-            console.log('📡 成功建立 Channel');
+            logger.info('Channel created successfully');
             
-            // 設定發布確認模式
-            await this.channel.confirmSelect();
+            // 暫時註解掉 confirmSelect，先測試基本功能
+            // await this.channel.confirmSelect();
             
             // 重置重連計數器
             this.reconnectAttempts = 0;
             
             return true;
         } catch (error) {
-            console.error('❌ 連接 RabbitMQ 失敗:', error.message);
+            logger.error('Failed to connect to RabbitMQ', { error: error.message });
             this.reconnect();
             return false;
         }
@@ -72,9 +108,12 @@ class RabbitMQProducer {
                 durable: true
             });
             
-            console.log(`✅ Exchange 設定完成: ${this.exchangeName}`);
+            logger.info('Exchange setup completed', { exchange: this.exchangeName });
         } catch (error) {
-            console.error('❌ 設定 Exchange 失敗:', error.message);
+            logger.error('Failed to setup exchange', { 
+                exchange: this.exchangeName, 
+                error: error.message 
+            });
             throw error;
         }
     }
@@ -108,68 +147,71 @@ class RabbitMQProducer {
             );
 
             if (published) {
-                console.log(`📤 訊息已發布 [${this.producerId}]:`, {
+                logger.info('Message published successfully', {
                     exchange: this.exchangeName,
                     routingKey: publishRoutingKey,
-                    message: message
+                    messageId: messageBuffer.toString().substring(0, 100)
                 });
                 return true;
             } else {
-                console.warn(`⚠️ 訊息發布失敗 - 緩衝區已滿`);
+                logger.warn('Message publish failed - buffer full');
                 return false;
             }
         } catch (error) {
-            console.error('❌ 發布訊息失敗:', error.message);
+            logger.error('Failed to publish message', { error: error.message });
             throw error;
         }
     }
 
     async publishMessageWithConfirm(message, routingKey = null) {
-        return new Promise((resolve, reject) => {
-            const messageBuffer = Buffer.from(JSON.stringify({
-                ...message,
-                producerId: this.producerId,
-                timestamp: new Date().toISOString(),
-                messageId: Math.random().toString(36).substr(2, 9)
-            }));
-
-            const publishRoutingKey = routingKey || this.routingKey;
-
-            this.channel.publish(
-                this.exchangeName,
-                publishRoutingKey,
-                messageBuffer,
-                {
-                    persistent: true,
-                    messageId: Math.random().toString(36).substr(2, 9),
-                    timestamp: Date.now(),
-                    appId: this.producerId
-                },
-                (err, ok) => {
-                    if (err) {
-                        console.error('❌ 訊息發布確認失敗:', err.message);
-                        reject(err);
-                    } else {
-                        console.log(`✅ 訊息發布確認成功 [${this.producerId}]`);
-                        resolve(ok);
-                    }
-                }
-            );
-        });
+        try {
+            // 暫時使用一般的 publish 方法，不使用確認模式
+            const result = await this.publishMessage(message, routingKey);
+            if (result) {
+                logger.info('Message published with confirmation');
+                return true;
+            } else {
+                throw new Error('訊息發布失敗');
+            }
+        } catch (error) {
+            logger.error('Failed to publish message with confirmation', { 
+                error: error.message 
+            });
+            throw error;
+        }
     }
 
     async reconnect() {
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.error(`❌ 超過最大重連次數 (${this.maxReconnectAttempts})`);
+            logger.error('Max reconnect attempts exceeded', { 
+                attempts: this.maxReconnectAttempts 
+            });
             process.exit(1);
         }
         
+        // 清理舊的連線
+        try {
+            if (this.channel) {
+                await this.channel.close().catch(() => {});
+                this.channel = null;
+            }
+            if (this.connection) {
+                await this.connection.close().catch(() => {});
+                this.connection = null;
+            }
+        } catch (error) {
+            // 忽略清理時的錯誤
+        }
+        
         this.reconnectAttempts++;
-        console.log(`🔄 嘗試重連... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+        logger.info('Attempting to reconnect', {
+            attempt: this.reconnectAttempts,
+            maxAttempts: this.maxReconnectAttempts
+        });
         
         setTimeout(async () => {
-            await this.connect();
-            if (this.connection && this.channel) {
+            const connected = await this.connect();
+            if (connected && this.connection && this.channel) {
                 await this.setupExchange();
             }
         }, this.reconnectDelay);
