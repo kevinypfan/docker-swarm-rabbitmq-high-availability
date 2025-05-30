@@ -24,21 +24,50 @@ services:
         constraints:
           - node.role == manager
 
-  consul:
+  consul-server:
     image: consul:1.15
-    command: agent -server -ui -client=0.0.0.0 -bootstrap-expect=1
+    command: >
+      agent
+      -server
+      -ui
+      -bootstrap-expect=3
+      -client=0.0.0.0
+      -retry-join=tasks.consul-server
+      -datacenter=dc1
+      -data-dir=/consul/data
     environment:
       - CONSUL_BIND_INTERFACE=eth0
-      - 'CONSUL_LOCAL_CONFIG={"skip_leave_on_interrupt": true}'
-    ports:
-      - "3001:8500"
-      - "8600:8600/udp"
     networks:
       - rabbitmq-network
+    volumes:
+      - consul_data:/consul/data
     deploy:
+      replicas: 3
       placement:
+        max_replicas_per_node: 1 
         constraints:
           - node.role == manager
+    ports:
+      - target: 8500
+        published: 3001
+        protocol: tcp
+        mode: host  # 使用 host 模式避免網路問題
+      - target: 8600
+        published: 8600
+        protocol: udp
+        mode: host
+      - target: 8301
+        published: 8301
+        protocol: udp
+        mode: host  # Serf LAN 端口
+      - target: 8302
+        published: 8302
+        protocol: udp
+        mode: host  # Serf WAN 端口
+      - target: 8300
+        published: 8300
+        protocol: tcp
+        mode: host  # RPC 端口
 
   rabbitmq:
     image: rabbitmq:4-management-alpine
@@ -59,6 +88,8 @@ services:
     deploy:
       endpoint_mode: dnsrr
       replicas: 3
+      placement:
+        max_replicas_per_node: 1 
       update_config:
         parallelism: 1
         delay: 30s
@@ -198,3 +229,7 @@ configs:
     file: ./enabled_plugins
   prometheus_config:
     file: ./prometheus.yml
+
+
+volumes:
+  consul_data:
