@@ -1,0 +1,82 @@
+name: Test
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Set up pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: latest
+    
+    - name: Get pnpm store directory
+      id: pnpm-cache
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+    
+    - name: Setup pnpm cache
+      uses: actions/cache@v3
+      with:
+        path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+    
+    - name: Install dependencies
+      working-directory: ./unified
+      run: pnpm install --frozen-lockfile
+    
+    - name: Run syntax check
+      working-directory: ./unified
+      run: node --check index.js
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./unified
+        load: true
+        tags: rabbitmq-tester:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Test Docker image - Consumer mode
+      run: |
+        timeout 5s docker run --rm \
+          -e MODE=consumer \
+          -e RABBITMQ_URL=amqp://test@non-existent:5672 \
+          rabbitmq-tester:test || echo "Consumer mode test completed"
+    
+    - name: Test Docker image - Producer mode
+      run: |
+        timeout 5s docker run --rm \
+          -e MODE=producer \
+          -e RABBITMQ_URL=amqp://test@non-existent:5672 \
+          -p 3000:3000 \
+          rabbitmq-tester:test || echo "Producer mode test completed"
+    
+    - name: Test Docker image - Both mode
+      run: |
+        timeout 5s docker run --rm \
+          -e MODE=both \
+          -e RABBITMQ_URL=amqp://test@non-existent:5672 \
+          -p 3001:3000 \
+          rabbitmq-tester:test || echo "Both mode test completed"

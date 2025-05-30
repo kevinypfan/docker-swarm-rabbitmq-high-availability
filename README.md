@@ -127,3 +127,100 @@ rabbitmq-ha/
 4. 建立 Pull Request
 
 祝你測試愉快！🎉
+# RabbitMQ HA 專案架構更新
+
+## 🎯 新增統一版本
+
+新增了 `/unified` 目錄，包含了整合 Producer 和 Consumer 的統一應用程式。
+
+### 📁 專案結構
+
+```
+rabbitmq-ha/
+├── consumer/          # 原始 Consumer 版本
+├── producer/          # 原始 Producer 版本
+├── unified/           # 🆕 統一版本 (推薦使用)
+│   ├── index.js
+│   ├── package.json
+│   ├── Dockerfile
+│   ├── README.md
+│   └── ...
+├── .github/           # 🆕 GitHub Actions 配置
+│   └── workflows/
+├── deploy/            # Docker Swarm 部署配置
+├── shared/            # 共享資源
+└── test*/             # 測試目錄
+```
+
+### ✨ 統一版本優勢
+
+1. **單一映像**: 只需要維護一個 Docker 映像
+2. **彈性部署**: 透過環境變數控制運行模式
+3. **程式碼重用**: 共享連接邏輯和重連機制
+4. **簡化維護**: 減少重複配置和依賴管理
+5. **自動化 CI/CD**: GitHub Actions 自動建置和發布
+
+### 🚀 推薦使用方式
+
+**Docker Hub 映像名稱**: `kevinypfan/rabbitmq-tester`
+
+```bash
+# 建置映像
+cd unified
+./build.sh
+
+# 推送到 Docker Hub (或使用 GitHub Actions)
+docker push kevinypfan/rabbitmq-tester:latest
+
+# 使用不同模式
+docker run -e MODE=consumer kevinypfan/rabbitmq-tester:latest
+docker run -e MODE=producer -p 3000:3000 kevinypfan/rabbitmq-tester:latest
+docker run -e MODE=both -p 3000:3000 kevinypfan/rabbitmq-tester:latest
+```
+
+### 📋 自動化部署
+
+專案包含完整的 GitHub Actions 配置：
+
+- **自動測試** - 每次推送和 PR 都會執行測試
+- **自動建置** - 支援多平台 (amd64, arm64)
+- **自動發布** - 推送到 Docker Hub
+- **版本管理** - 自動標籤管理
+
+詳見 `GITHUB_ACTIONS_SETUP.md` 了解設定方式。
+
+### 📋 遷移指南
+
+從原始的 consumer/producer 版本遷移到統一版本：
+
+1. 使用 `unified/` 目錄中的新版本
+2. 設定環境變數 `MODE` 來控制運行模式
+3. 更新 Docker Compose 配置使用新的映像名稱
+4. 設定 GitHub Actions secrets 來啟用自動發布
+5. 原始的 consumer 和 producer 目錄保留作為參考
+
+### 🔧 開發和測試
+
+```bash
+cd unified
+
+# 本地開發
+pnpm install
+pnpm run start:consumer    # Consumer 模式
+pnpm run start:producer    # Producer 模式
+pnpm run start:both        # 混合模式
+
+# 建置和測試
+./build.sh               # 建置 Docker 映像
+./test.sh                # 運行測試
+```
+
+### 🎯 特色功能
+
+- **單行日誌格式** - 便於閱讀和分析
+- **多平台支援** - 支援 amd64 和 arm64 架構
+- **健康檢查** - 內建 Docker 健康檢查
+- **優雅關閉** - 支援 SIGINT/SIGTERM 信號處理
+- **自動重連** - 內建 RabbitMQ 重連機制
+
+統一版本現在是專案的主要版本，建議新的部署都使用這個版本！
