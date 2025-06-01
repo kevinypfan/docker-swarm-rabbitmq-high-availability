@@ -39,8 +39,8 @@ services:
       - CONSUL_BIND_INTERFACE=eth0
     networks:
       - rabbitmq-network
-    volumes:
-      - consul_data:/consul/data
+    # volumes:
+    #   - consul_data:/consul/data
     deploy:
       replicas: 3
       placement:
@@ -141,82 +141,55 @@ services:
         constraints:
           - node.role == manager
 
-  # RabbitMQ Consumer 服務
-  consumer:
-    image: rabbitmq-ha-consumer:latest
-    build:
-      context: ../consumer
-      dockerfile: Dockerfile
+  rabbitmq-producer:
+    image: kevinypfan/rabbitmq-tester:latest
     environment:
-      - RABBITMQ_HOSTS=amqp://admin:test1234@rabbitmq:5672
+      - MODE=producer
+      - NODE_ENV=production
+      - RABBITMQ_URL=amqp://admin:test1234@rabbitmq:5672
       - QUEUE_NAME=test-queue
       - EXCHANGE_NAME=test-exchange
       - ROUTING_KEY=test.message
-      - HOSTNAME={{.Service.Name}}-{{.Task.Slot}}
-    networks:
-      - rabbitmq-network
-    depends_on:
-      - rabbitmq
-    deploy:
-      replicas: 3
-      update_config:
-        parallelism: 1
-        delay: 10s
-        order: start-first
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
-        window: 60s
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: "256m"
-        reservations:
-          cpus: "0.1"
-          memory: "128m"
-
-  # RabbitMQ Producer 服務
-  producer:
-    image: rabbitmq-ha-producer:latest
-    build:
-      context: ../producer
-      dockerfile: Dockerfile
-    environment:
-      - RABBITMQ_HOSTS=amqp://admin:test1234@rabbitmq:5672
-      - EXCHANGE_NAME=test-exchange
-      - ROUTING_KEY=test.message
-      - HOSTNAME={{.Service.Name}}-{{.Task.Slot}}
       - PORT=3000
-      - AUTO_SEND=false
-      - AUTO_SEND_INTERVAL=10000
+      - AUTO_SEND=true
+      - AUTO_SEND_INTERVAL=2000
     networks:
       - rabbitmq-network
-    depends_on:
-      - rabbitmq
     deploy:
       replicas: 2
-      update_config:
-        parallelism: 1
-        delay: 10s
-        order: start-first
       restart_policy:
         condition: on-failure
         delay: 5s
         max_attempts: 3
-        window: 60s
-      labels:
-        - "traefik.enable=true"
-        - "traefik.http.routers.producer.rule=Host(`producer.swarm-test`)"
-        - "traefik.http.routers.producer.entrypoints=web"
-        - "traefik.http.services.producer.loadbalancer.server.port=3000"
       resources:
         limits:
-          cpus: "0.5"
-          memory: "256m"
+          memory: 128M
         reservations:
-          cpus: "0.1"
-          memory: "128m"
+          memory: 64M
+
+  rabbitmq-consumer:
+    image: kevinypfan/rabbitmq-tester:latest
+    environment:
+      - MODE=consumer
+      - NODE_ENV=production
+      - RABBITMQ_URL=amqp://admin:test1234@rabbitmq:5672
+      - QUEUE_NAME=test-queue
+      - EXCHANGE_NAME=test-exchange
+      - ROUTING_KEY=test.message
+    networks:
+      - rabbitmq-network
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+  
 
 networks:
   rabbitmq-network:
@@ -231,5 +204,5 @@ configs:
     file: ./prometheus.yml
 
 
-volumes:
-  consul_data:
+# volumes:
+#   consul_data:
