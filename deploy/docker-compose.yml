@@ -70,14 +70,14 @@ services:
         mode: host  # RPC 端口
 
   rabbitmq:
-    image: rabbitmq:4-management-alpine
-    hostname: "{{.Service.Name}}.{{.Task.Slot}}"
+    image: rabbitmq:4.1.0-management-alpine
+    hostname: "{{.Node.Hostname}}.{{.Service.Name}}"
     environment:
       RABBITMQ_DEFAULT_USER: admin
       RABBITMQ_DEFAULT_PASS: test1234
       RABBITMQ_USE_LONGNAME: "true"
       RABBITMQ_ERLANG_COOKIE: "SWARM-COOKIE-SECRET-KEY-HERE"
-      RABBITMQ_NODENAME: "rabbit@{{.Service.Name}}.{{.Task.Slot}}"
+      RABBITMQ_NODENAME: "rabbit@{{.Node.Hostname}}.{{.Service.Name}}"
     configs:
       - source: rabbitmq_config_rev2
         target: /etc/rabbitmq/rabbitmq.conf
@@ -85,6 +85,9 @@ services:
         target: /etc/rabbitmq/enabled_plugins
     networks:
       - rabbitmq-network
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - rabbitmq_logs:/var/log/rabbitmq
     deploy:
       endpoint_mode: dnsrr
       replicas: 3
@@ -156,60 +159,27 @@ services:
       - "3000:3000"
     networks:
       - rabbitmq-network
+    configs:
+      - source: datasources_config_rev1
+        target: /etc/grafana/provisioning/datasources/datasources.yaml
+      - source: dashboards_config_rev1
+        target: /etc/grafana/provisioning/dashboards/dashboards.yaml
+      - source: dashboard_1860_rev37
+        target: /var/lib/grafana/dashboards/1860_rev37.json
+      - source: dashboard_13702_rev3
+        target: /var/lib/grafana/dashboards/13702_rev3.json
+      - source: dashboard_17023_rev1
+        target: /var/lib/grafana/dashboards/17023_rev1.json
+      - source: dashboard_18345_rev1
+        target: /var/lib/grafana/dashboards/18345_rev1.json
+      - source: dashboard_10991_rev15
+        target: /var/lib/grafana/dashboards/10991_rev15.json
+      - source: dashboard_11340_rev8
+        target: /var/lib/grafana/dashboards/11340_rev8.json
     deploy:
       placement:
         constraints:
           - node.role == manager
-
-  rabbitmq-producer:
-    image: kevinypfan/rabbitmq-tester:latest
-    environment:
-      - MODE=producer
-      - NODE_ENV=production
-      - RABBITMQ_URL=amqp://admin:test1234@rabbitmq:5672
-      - QUEUE_NAME=test-queue
-      - EXCHANGE_NAME=test-exchange
-      - ROUTING_KEY=test.message
-      - PORT=3000
-      - AUTO_SEND=true
-      - AUTO_SEND_INTERVAL=700
-    networks:
-      - rabbitmq-network
-    deploy:
-      replicas: 5
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
-      resources:
-        limits:
-          memory: 128M
-        reservations:
-          memory: 64M
-
-  rabbitmq-consumer:
-    image: kevinypfan/rabbitmq-tester:latest
-    environment:
-      - MODE=consumer
-      - NODE_ENV=production
-      - RABBITMQ_URL=amqp://admin:test1234@rabbitmq:5672
-      - QUEUE_NAME=test-queue
-      - EXCHANGE_NAME=test-exchange
-      - ROUTING_KEY=test.message
-    networks:
-      - rabbitmq-network
-    deploy:
-      replicas: 5
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
-      resources:
-        limits:
-          memory: 128M
-        reservations:
-          memory: 64M
-  
 
 networks:
   rabbitmq-network:
@@ -222,7 +192,23 @@ configs:
     file: ./enabled_plugins
   prometheus_config:
     file: ./prometheus.yml
+  datasources_config_rev1:
+    file: ./grafana/provisioning/datasources/datasources.yml
+  dashboards_config_rev1:
+    file: ./grafana/provisioning/dashboards/dashboards.yml
+  dashboard_1860_rev37:
+    file: ./grafana/dashboards/1860_rev37.json
+  dashboard_13702_rev3:
+    file: ./grafana/dashboards/13702_rev3.json
+  dashboard_17023_rev1:
+    file: ./grafana/dashboards/17023_rev1.json
+  dashboard_18345_rev1:
+    file: ./grafana/dashboards/18345_rev1.json
+  dashboard_10991_rev15:
+    file: ./grafana/dashboards/10991_rev15.json
+  dashboard_11340_rev8:
+    file: ./grafana/dashboards/11340_rev8.json
 
-
-# volumes:
-#   consul_data:
+volumes:
+  rabbitmq_data:
+  rabbitmq_logs:

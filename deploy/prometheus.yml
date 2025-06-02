@@ -29,6 +29,8 @@ scrape_configs:
       # Use Swarm service name as Prometheus job label.
       - source_labels: [__meta_dockerswarm_service_name]
         target_label: job
+      - source_labels: [__meta_dockerswarm_service_label_com_docker_stack_namespace]
+        target_label: namespace
       # Save swarm stack name
       - source_labels: [__meta_dockerswarm_service_label_com_docker_stack_namespace]
         target_label: stack
