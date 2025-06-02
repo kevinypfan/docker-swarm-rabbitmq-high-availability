@@ -152,11 +152,11 @@ services:
       - ROUTING_KEY=test.message
       - PORT=3000
       - AUTO_SEND=true
-      - AUTO_SEND_INTERVAL=2000
+      - AUTO_SEND_INTERVAL=700
     networks:
       - rabbitmq-network
     deploy:
-      replicas: 2
+      replicas: 5
       restart_policy:
         condition: on-failure
         delay: 5s
@@ -179,7 +179,7 @@ services:
     networks:
       - rabbitmq-network
     deploy:
-      replicas: 3
+      replicas: 5
       restart_policy:
         condition: on-failure
         delay: 5s

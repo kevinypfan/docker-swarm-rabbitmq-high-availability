@@ -221,7 +221,7 @@ class RabbitMQClient {
   }
 
   async processMessage(content) {
-    const processingTime = Math.random() * 2000 + 500; // 0.5-2.5秒
+    const processingTime = Math.random() * 1000;
     this.logger.debug("Processing message", {
       processingTime: Math.round(processingTime),
       content: typeof content === "string" ? content.substring(0, 50) : content,
