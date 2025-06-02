@@ -71,15 +71,15 @@ services:
 
   rabbitmq:
     image: rabbitmq:4-management-alpine
-    hostname: "{{.Service.Name}}-{{.Task.Slot}}.{{.Task.ID}}"
+    hostname: "{{.Service.Name}}.{{.Task.Slot}}"
     environment:
       RABBITMQ_DEFAULT_USER: admin
       RABBITMQ_DEFAULT_PASS: test1234
       RABBITMQ_USE_LONGNAME: "true"
       RABBITMQ_ERLANG_COOKIE: "SWARM-COOKIE-SECRET-KEY-HERE"
-      RABBITMQ_NODENAME: "rabbit@{{.Service.Name}}-{{.Task.Slot}}.{{.Task.ID}}"
+      RABBITMQ_NODENAME: "rabbit@{{.Service.Name}}.{{.Task.Slot}}"
     configs:
-      - source: rabbitmq_config
+      - source: rabbitmq_config_rev2
         target: /etc/rabbitmq/rabbitmq.conf
       - source: rabbitmq_enabled_plugins
         target: /etc/rabbitmq/enabled_plugins
@@ -101,9 +101,29 @@ services:
         window: 60s
       labels:
         - "traefik.enable=true"
-        - "traefik.http.routers.rabbitmq.rule=Host(`rabbitmq.swarm-test`)"
-        - "traefik.http.routers.rabbitmq.entrypoints=web"
-        - "traefik.http.services.rabbitmq.loadbalancer.server.port=15672"
+        
+        # 主要 UI 路由
+        - "traefik.http.routers.rabbitmq-ui.rule=PathPrefix(`/rabbitmq`) && !PathPrefix(`/rabbitmq/api`)"
+        - "traefik.http.routers.rabbitmq-ui.entrypoints=web"
+        - "traefik.http.routers.rabbitmq-ui.service=rabbitmq-ui"
+        - "traefik.http.services.rabbitmq-ui.loadbalancer.server.port=15672"
+        
+        # API 路由 - 保持 /api 路徑
+        - "traefik.http.routers.rabbitmq-api.rule=PathPrefix(`/rabbitmq/api`)"
+        - "traefik.http.routers.rabbitmq-api.entrypoints=web"
+        - "traefik.http.routers.rabbitmq-api.service=rabbitmq-api"
+        - "traefik.http.services.rabbitmq-api.loadbalancer.server.port=15672"
+        
+        # UI 中介軟體
+        - "traefik.http.middlewares.rabbitmq-ui-strip.stripprefix.prefixes=/rabbitmq"
+        - "traefik.http.middlewares.rabbitmq-ui-redirect.redirectregex.regex=^(.*)/rabbitmq$$"
+        - "traefik.http.middlewares.rabbitmq-ui-redirect.redirectregex.replacement=$${1}/rabbitmq/"
+        - "traefik.http.routers.rabbitmq-ui.middlewares=rabbitmq-ui-redirect,rabbitmq-ui-strip"
+        
+        # API 中介軟體 - 重寫 /rabbitmq/api 為 /api
+        - "traefik.http.middlewares.rabbitmq-api-strip.stripprefix.prefixes=/rabbitmq"
+        - "traefik.http.routers.rabbitmq-api.middlewares=rabbitmq-api-strip"
+        
         - "prometheus.metrics.port=15692"
       resources:
         limits:
@@ -196,7 +216,7 @@ networks:
     driver: overlay
 
 configs:
-  rabbitmq_config:
+  rabbitmq_config_rev2:
     file: ./rabbitmq.conf
   rabbitmq_enabled_plugins:
     file: ./enabled_plugins
