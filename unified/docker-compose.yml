@@ -14,6 +14,7 @@ services:
       - PORT=3000
       - AUTO_SEND=true
       - AUTO_SEND_INTERVAL=700
+      - HEARTBEAT_INTERVAL=5000
     networks:
       - rabbitmq-ha_rabbitmq-network
     deploy:

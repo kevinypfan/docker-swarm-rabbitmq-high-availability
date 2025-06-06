@@ -47,6 +47,11 @@ class RabbitMQClient {
     this.lastReceivedSequence = 0;
     this.statsBuffer = [];
 
+    // 訊息遺失檢測相關
+    this.producerSequences = new Map(); // 追蹤每個 producer 的序號
+    this.producerHeartbeats = new Map(); // 追蹤每個 producer 的心跳
+    this.heartbeatInterval = parseInt(process.env.HEARTBEAT_INTERVAL) || 10000; // 10秒
+
     // RabbitMQ 連接設定
     this.rabbitmqUrl =
       process.env.RABBITMQ_URL ||
@@ -466,6 +471,7 @@ class RabbitMQClient {
     if (this.mode === "producer" || this.mode === "both") {
       this.startProducerAPI();
       this.startAutoSender();
+      this.startHeartbeat();
     }
 
     if (this.mode === "stats") {
@@ -535,11 +541,53 @@ class RabbitMQClient {
         processedAt: new Date().toISOString()
       });
 
+      // 更新 producer 序號追蹤
+      this.updateProducerSequences(stats.producerClientId, stats.sequenceNumber);
+
       // 如果緩衝區太大，移除舊的資料
       if (this.statsBuffer.length > 10000) {
         this.statsBuffer = this.statsBuffer.slice(-5000);
       }
     }
+    
+    // 處理 producer 心跳
+    if (statsData.type === 'heartbeat') {
+      this.processProducerHeartbeat(statsData);
+    }
+  }
+
+  updateProducerSequences(producerId, sequenceNumber) {
+    if (!this.producerSequences.has(producerId)) {
+      this.producerSequences.set(producerId, new Set());
+    }
+    
+    const sequences = this.producerSequences.get(producerId);
+    sequences.add(sequenceNumber);
+    
+    // 限制儲存的序號數量，避免記憶體過度使用
+    if (sequences.size > 50000) {
+      const sortedSequences = Array.from(sequences).sort((a, b) => a - b);
+      const keepSequences = sortedSequences.slice(-25000);
+      this.producerSequences.set(producerId, new Set(keepSequences));
+    }
+  }
+
+  processProducerHeartbeat(heartbeatData) {
+    const { producerId, currentSequence, totalSent, timestamp } = heartbeatData;
+    
+    this.producerHeartbeats.set(producerId, {
+      currentSequence,
+      totalSent,
+      timestamp,
+      lastSeen: new Date().toISOString()
+    });
+
+    this.logger.debug("Producer heartbeat received", {
+      producerId,
+      currentSequence,
+      totalSent,
+      timestamp
+    });
   }
 
   startPeriodicReporting() {
@@ -793,6 +841,14 @@ class RabbitMQClient {
                         <div class="metric-value">\${data.avgLatency || '0ms'}</div>
                         <div class="metric-label">Avg Latency</div>
                       </div>
+                      <div class="metric">
+                        <div class="metric-value \${(data.lossRate && parseFloat(data.lossRate) > 0.1) ? 'error' : 'success'}">\${data.lossRate || '0%'}</div>
+                        <div class="metric-label">Message Loss Rate</div>
+                      </div>
+                      <div class="metric">
+                        <div class="metric-value \${(data.missingMessages && data.missingMessages > 0) ? 'warning' : 'success'}">\${data.missingMessages || 0}</div>
+                        <div class="metric-label">Missing Messages</div>
+                      </div>
                     \`;
                   }
                 })
@@ -837,7 +893,7 @@ class RabbitMQClient {
                 } else {
                   document.getElementById('live-data').innerHTML = \`
                     <div style="font-size: 12px; color: #666;">Last update: \${new Date().toLocaleTimeString()}</div>
-                    <div>Messages: \${data.totalMessages || 0} | Duplicates: \${data.duplicateRate || '0%'} | Out of Order: \${data.outOfOrderRate || '0%'} | Latency: \${data.avgLatency || '0ms'}</div>
+                    <div>Messages: \${data.totalMessages || 0} | Duplicates: \${data.duplicateRate || '0%'} | Out of Order: \${data.outOfOrderRate || '0%'} | Loss Rate: \${data.lossRate || '0%'} | Latency: \${data.avgLatency || '0ms'}</div>
                   \`;
                 }
               };
@@ -887,7 +943,10 @@ class RabbitMQClient {
         outOfOrderRate: "0%",
         avgLatency: "0ms",
         maxLatency: "0ms",
-        minLatency: "0ms"
+        minLatency: "0ms",
+        lossRate: "0%",
+        missingMessages: 0,
+        totalExpected: 0
       };
     }
 
@@ -906,7 +965,10 @@ class RabbitMQClient {
         outOfOrderRate: "0%", 
         avgLatency: "0ms",
         maxLatency: "0ms",
-        minLatency: "0ms"
+        minLatency: "0ms",
+        lossRate: "0%",
+        missingMessages: 0,
+        totalExpected: 0
       };
     }
 
@@ -920,6 +982,9 @@ class RabbitMQClient {
     const maxLatency = latencies.length > 0 ? Math.max(...latencies) : 0;
     const minLatency = latencies.length > 0 ? Math.min(...latencies) : 0;
 
+    // 計算訊息遺失率
+    const lossStats = this.calculateMessageLoss();
+
     return {
       totalMessages,
       duplicateMessages,
@@ -928,7 +993,48 @@ class RabbitMQClient {
       outOfOrderRate: `${(outOfOrderMessages/totalMessages*100).toFixed(2)}%`,
       avgLatency: `${avgLatency.toFixed(0)}ms`,
       maxLatency: `${maxLatency}ms`,
-      minLatency: `${minLatency}ms`
+      minLatency: `${minLatency}ms`,
+      lossRate: lossStats.lossRate,
+      missingMessages: lossStats.missingMessages,
+      totalExpected: lossStats.totalExpected
+    };
+  }
+
+  calculateMessageLoss() {
+    let totalExpected = 0;
+    let totalReceived = 0;
+    let missingMessages = 0;
+
+    // 檢查每個 producer 的訊息遺失情況
+    for (const [producerId, heartbeat] of this.producerHeartbeats.entries()) {
+      const expectedSequences = heartbeat.totalSent;
+      const receivedSequences = this.producerSequences.get(producerId);
+      
+      if (receivedSequences) {
+        const receivedCount = receivedSequences.size;
+        totalExpected += expectedSequences;
+        totalReceived += receivedCount;
+        
+        // 計算遺失的序號
+        const missing = expectedSequences - receivedCount;
+        if (missing > 0) {
+          missingMessages += missing;
+        }
+      } else {
+        // 如果沒有收到任何訊息，全部算遺失
+        totalExpected += expectedSequences;
+        missingMessages += expectedSequences;
+      }
+    }
+
+    const lossRate = totalExpected > 0 ? 
+      `${(missingMessages/totalExpected*100).toFixed(2)}%` : "0%";
+
+    return {
+      totalExpected,
+      totalReceived,
+      missingMessages,
+      lossRate
     };
   }
 
@@ -983,6 +1089,30 @@ class RabbitMQClient {
       const avgLatency = stats.latencies.length > 0 ? 
         stats.latencies.reduce((a, b) => a + b, 0) / stats.latencies.length : 0;
       
+      // 獲取 producer 的心跳資訊和遺失統計
+      const heartbeat = this.producerHeartbeats.get(producer);
+      const receivedSequences = this.producerSequences.get(producer);
+      
+      let lossInfo = {
+        expectedMessages: 0,
+        receivedMessages: stats.count,
+        missingMessages: 0,
+        lossRate: "0%"
+      };
+
+      if (heartbeat && receivedSequences) {
+        const expected = heartbeat.totalSent;
+        const received = receivedSequences.size;
+        const missing = Math.max(0, expected - received);
+        
+        lossInfo = {
+          expectedMessages: expected,
+          receivedMessages: received,
+          missingMessages: missing,
+          lossRate: expected > 0 ? `${(missing/expected*100).toFixed(2)}%` : "0%"
+        };
+      }
+      
       return {
         producer,
         messageCount: stats.count,
@@ -992,7 +1122,9 @@ class RabbitMQClient {
         duplicateRate: `${(stats.duplicates/stats.count*100).toFixed(2)}%`,
         outOfOrderCount: stats.outOfOrder,
         outOfOrderRate: `${(stats.outOfOrder/stats.count*100).toFixed(2)}%`,
-        avgLatency: `${avgLatency.toFixed(0)}ms`
+        avgLatency: `${avgLatency.toFixed(0)}ms`,
+        ...lossInfo,
+        lastHeartbeat: heartbeat ? heartbeat.lastSeen : null
       };
     });
   }
@@ -1088,6 +1220,52 @@ class RabbitMQClient {
         batch: `POST /send-batch`,
       });
     });
+  }
+
+  // Producer 心跳機制
+  startHeartbeat() {
+    if (this.mode !== "producer" && this.mode !== "both") {
+      return;
+    }
+
+    this.logger.info("Starting producer heartbeat", { 
+      interval: `${this.heartbeatInterval}ms` 
+    });
+
+    setInterval(async () => {
+      try {
+        const heartbeatMessage = {
+          type: "heartbeat",
+          producerId: this.clientId,
+          currentSequence: this.sequenceNumber,
+          totalSent: this.sequenceNumber,
+          timestamp: new Date().toISOString()
+        };
+
+        // 發送心跳到統計 exchange
+        const messageBuffer = Buffer.from(JSON.stringify(heartbeatMessage));
+        
+        const published = this.channel.publish(
+          this.statsExchangeName,
+          'stats.heartbeat',
+          messageBuffer,
+          {
+            persistent: false, // 心跳訊息不需要持久化
+            timestamp: Date.now(),
+            appId: this.clientId,
+          }
+        );
+
+        if (published) {
+          this.logger.debug("Heartbeat sent", {
+            currentSequence: this.sequenceNumber,
+            totalSent: this.sequenceNumber
+          });
+        }
+      } catch (error) {
+        this.logger.error("Failed to send heartbeat", { error: error.message });
+      }
+    }, this.heartbeatInterval);
   }
 
   // 自動發送訊息
