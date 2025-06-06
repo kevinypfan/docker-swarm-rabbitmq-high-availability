@@ -470,6 +470,7 @@ class RabbitMQClient {
 
     if (this.mode === "stats") {
       await this.startStatsCollection();
+      this.startStatsAPI();
     }
   }
 
@@ -612,6 +613,387 @@ class RabbitMQClient {
         messageCount: stats.count,
         sequenceRange: `${Math.min(...stats.sequences)}-${Math.max(...stats.sequences)}`
       }))
+    });
+  }
+
+  // Stats API 伺服器
+  startStatsAPI() {
+    const app = express();
+    app.use(express.json());
+
+    // 允許 CORS
+    app.use((req, res, next) => {
+      res.header('Access-Control-Allow-Origin', '*');
+      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+      next();
+    });
+
+    // 健康檢查端點
+    app.get("/health", (req, res) => {
+      res.json({
+        status: "ok",
+        mode: this.mode,
+        clientId: this.clientId,
+        connected: !!this.connection,
+        timestamp: new Date().toISOString(),
+        statsBufferSize: this.statsBuffer.length
+      });
+    });
+
+    // 統計摘要端點
+    app.get("/stats", (req, res) => {
+      try {
+        const stats = this.getCurrentStats();
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          ...stats
+        });
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          error: error.message
+        });
+      }
+    });
+
+    // 詳細統計端點
+    app.get("/stats/detailed", (req, res) => {
+      try {
+        const detailed = this.getDetailedStats();
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          ...detailed
+        });
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          error: error.message
+        });
+      }
+    });
+
+    // Producer 統計端點
+    app.get("/stats/producers", (req, res) => {
+      try {
+        const producers = this.getProducerStats();
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          producers
+        });
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          error: error.message
+        });
+      }
+    });
+
+    // 即時統計流端點 (Server-Sent Events)
+    app.get("/stats/live", (req, res) => {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+
+      const sendStats = () => {
+        try {
+          const stats = this.getCurrentStats();
+          res.write(`data: ${JSON.stringify(stats)}\n\n`);
+        } catch (error) {
+          res.write(`data: ${JSON.stringify({error: error.message})}\n\n`);
+        }
+      };
+
+      // 立即發送一次
+      sendStats();
+
+      // 每5秒發送一次
+      const interval = setInterval(sendStats, 5000);
+
+      req.on('close', () => {
+        clearInterval(interval);
+      });
+    });
+
+    // 簡單的 HTML 儀表板
+    app.get("/", (req, res) => {
+      res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>RabbitMQ Reliability Statistics</title>
+          <meta charset="utf-8">
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+            .container { max-width: 1200px; margin: 0 auto; }
+            .card { background: white; padding: 20px; margin: 10px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+            .metric { display: inline-block; margin: 10px 20px 10px 0; }
+            .metric-value { font-size: 24px; font-weight: bold; color: #2196F3; }
+            .metric-label { font-size: 14px; color: #666; }
+            .error { color: #f44336; }
+            .success { color: #4CAF50; }
+            .warning { color: #FF9800; }
+            .refresh-btn { background: #2196F3; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; }
+            .refresh-btn:hover { background: #1976D2; }
+            pre { background: #f0f0f0; padding: 10px; border-radius: 4px; overflow-x: auto; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>🐰 RabbitMQ Reliability Statistics</h1>
+            
+            <div class="card">
+              <h2>📊 Current Metrics</h2>
+              <button class="refresh-btn" onclick="loadStats()">🔄 Refresh</button>
+              <div id="metrics"></div>
+            </div>
+
+            <div class="card">
+              <h2>📈 Live Stream</h2>
+              <div id="live-status">Connecting...</div>
+              <div id="live-data"></div>
+            </div>
+
+            <div class="card">
+              <h2>🔍 Detailed Statistics</h2>
+              <pre id="detailed-stats">Loading...</pre>
+            </div>
+
+            <div class="card">
+              <h2>🏭 Producer Statistics</h2>
+              <pre id="producer-stats">Loading...</pre>
+            </div>
+          </div>
+
+          <script>
+            function loadStats() {
+              fetch('/stats')
+                .then(r => r.json())
+                .then(data => {
+                  if (data.success) {
+                    document.getElementById('metrics').innerHTML = \`
+                      <div class="metric">
+                        <div class="metric-value">\${data.totalMessages || 0}</div>
+                        <div class="metric-label">Total Messages</div>
+                      </div>
+                      <div class="metric">
+                        <div class="metric-value \${(data.duplicateRate && parseFloat(data.duplicateRate) > 5) ? 'error' : 'success'}">\${data.duplicateRate || '0%'}</div>
+                        <div class="metric-label">Duplicate Rate</div>
+                      </div>
+                      <div class="metric">
+                        <div class="metric-value \${(data.outOfOrderRate && parseFloat(data.outOfOrderRate) > 5) ? 'error' : 'success'}">\${data.outOfOrderRate || '0%'}</div>
+                        <div class="metric-label">Out of Order Rate</div>
+                      </div>
+                      <div class="metric">
+                        <div class="metric-value">\${data.avgLatency || '0ms'}</div>
+                        <div class="metric-label">Avg Latency</div>
+                      </div>
+                    \`;
+                  }
+                })
+                .catch(err => {
+                  document.getElementById('metrics').innerHTML = '<div class="error">Error loading stats: ' + err.message + '</div>';
+                });
+            }
+
+            function loadDetailed() {
+              fetch('/stats/detailed')
+                .then(r => r.json())
+                .then(data => {
+                  document.getElementById('detailed-stats').textContent = JSON.stringify(data, null, 2);
+                })
+                .catch(err => {
+                  document.getElementById('detailed-stats').textContent = 'Error: ' + err.message;
+                });
+            }
+
+            function loadProducers() {
+              fetch('/stats/producers')
+                .then(r => r.json())
+                .then(data => {
+                  document.getElementById('producer-stats').textContent = JSON.stringify(data, null, 2);
+                })
+                .catch(err => {
+                  document.getElementById('producer-stats').textContent = 'Error: ' + err.message;
+                });
+            }
+
+            function setupLiveStream() {
+              const eventSource = new EventSource('/stats/live');
+              
+              eventSource.onopen = function(event) {
+                document.getElementById('live-status').innerHTML = '<span class="success">✅ Connected to live stream</span>';
+              };
+              
+              eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                if (data.error) {
+                  document.getElementById('live-data').innerHTML = '<div class="error">Error: ' + data.error + '</div>';
+                } else {
+                  document.getElementById('live-data').innerHTML = \`
+                    <div style="font-size: 12px; color: #666;">Last update: \${new Date().toLocaleTimeString()}</div>
+                    <div>Messages: \${data.totalMessages || 0} | Duplicates: \${data.duplicateRate || '0%'} | Out of Order: \${data.outOfOrderRate || '0%'} | Latency: \${data.avgLatency || '0ms'}</div>
+                  \`;
+                }
+              };
+              
+              eventSource.onerror = function(event) {
+                document.getElementById('live-status').innerHTML = '<span class="error">❌ Connection error</span>';
+              };
+            }
+
+            // 初始載入
+            loadStats();
+            loadDetailed();
+            loadProducers();
+            setupLiveStream();
+
+            // 定期刷新
+            setInterval(loadStats, 10000);
+            setInterval(loadDetailed, 30000);
+            setInterval(loadProducers, 30000);
+          </script>
+        </body>
+        </html>
+      `);
+    });
+
+    const port = process.env.PORT || 3000;
+    app.listen(port, () => {
+      this.logger.info("Stats API server started", { port });
+      this.logger.info("Stats API endpoints available", {
+        dashboard: `http://localhost:${port}/`,
+        health: `GET /health`,
+        stats: `GET /stats`,
+        detailed: `GET /stats/detailed`,
+        producers: `GET /stats/producers`,
+        live: `GET /stats/live`
+      });
+    });
+  }
+
+  getCurrentStats() {
+    if (this.statsBuffer.length === 0) {
+      return {
+        totalMessages: 0,
+        duplicateMessages: 0,
+        duplicateRate: "0%",
+        outOfOrderMessages: 0, 
+        outOfOrderRate: "0%",
+        avgLatency: "0ms",
+        maxLatency: "0ms",
+        minLatency: "0ms"
+      };
+    }
+
+    const now = new Date();
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+    const recentStats = this.statsBuffer.filter(stat => 
+      new Date(stat.receivedTimestamp) > fiveMinutesAgo
+    );
+
+    if (recentStats.length === 0) {
+      return {
+        totalMessages: 0,
+        duplicateMessages: 0,
+        duplicateRate: "0%",
+        outOfOrderMessages: 0,
+        outOfOrderRate: "0%", 
+        avgLatency: "0ms",
+        maxLatency: "0ms",
+        minLatency: "0ms"
+      };
+    }
+
+    const totalMessages = recentStats.length;
+    const duplicateMessages = recentStats.filter(s => s.isDuplicate).length;
+    const outOfOrderMessages = recentStats.filter(s => s.isOutOfOrder).length;
+    const latencies = recentStats.map(s => s.latency).filter(l => l >= 0);
+    
+    const avgLatency = latencies.length > 0 ? 
+      latencies.reduce((a, b) => a + b, 0) / latencies.length : 0;
+    const maxLatency = latencies.length > 0 ? Math.max(...latencies) : 0;
+    const minLatency = latencies.length > 0 ? Math.min(...latencies) : 0;
+
+    return {
+      totalMessages,
+      duplicateMessages,
+      duplicateRate: `${(duplicateMessages/totalMessages*100).toFixed(2)}%`,
+      outOfOrderMessages,
+      outOfOrderRate: `${(outOfOrderMessages/totalMessages*100).toFixed(2)}%`,
+      avgLatency: `${avgLatency.toFixed(0)}ms`,
+      maxLatency: `${maxLatency}ms`,
+      minLatency: `${minLatency}ms`
+    };
+  }
+
+  getDetailedStats() {
+    const current = this.getCurrentStats();
+    const bufferSize = this.statsBuffer.length;
+    const oldestEntry = this.statsBuffer.length > 0 ? this.statsBuffer[0].receivedTimestamp : null;
+    const newestEntry = this.statsBuffer.length > 0 ? this.statsBuffer[this.statsBuffer.length - 1].receivedTimestamp : null;
+
+    return {
+      ...current,
+      bufferInfo: {
+        totalEntries: bufferSize,
+        oldestEntry,
+        newestEntry
+      },
+      period: "Last 5 minutes"
+    };
+  }
+
+  getProducerStats() {
+    if (this.statsBuffer.length === 0) {
+      return [];
+    }
+
+    const now = new Date();
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+    const recentStats = this.statsBuffer.filter(stat => 
+      new Date(stat.receivedTimestamp) > fiveMinutesAgo
+    );
+
+    const producerStats = {};
+    recentStats.forEach(stat => {
+      const producer = stat.producerClientId;
+      if (!producerStats[producer]) {
+        producerStats[producer] = { 
+          count: 0, 
+          sequences: [], 
+          duplicates: 0, 
+          outOfOrder: 0,
+          latencies: []
+        };
+      }
+      producerStats[producer].count++;
+      producerStats[producer].sequences.push(stat.sequenceNumber);
+      if (stat.isDuplicate) producerStats[producer].duplicates++;
+      if (stat.isOutOfOrder) producerStats[producer].outOfOrder++;
+      if (stat.latency >= 0) producerStats[producer].latencies.push(stat.latency);
+    });
+
+    return Object.entries(producerStats).map(([producer, stats]) => {
+      const avgLatency = stats.latencies.length > 0 ? 
+        stats.latencies.reduce((a, b) => a + b, 0) / stats.latencies.length : 0;
+      
+      return {
+        producer,
+        messageCount: stats.count,
+        sequenceRange: stats.sequences.length > 0 ? 
+          `${Math.min(...stats.sequences)}-${Math.max(...stats.sequences)}` : 'N/A',
+        duplicateCount: stats.duplicates,
+        duplicateRate: `${(stats.duplicates/stats.count*100).toFixed(2)}%`,
+        outOfOrderCount: stats.outOfOrder,
+        outOfOrderRate: `${(stats.outOfOrder/stats.count*100).toFixed(2)}%`,
+        avgLatency: `${avgLatency.toFixed(0)}ms`
+      };
     });
   }
 

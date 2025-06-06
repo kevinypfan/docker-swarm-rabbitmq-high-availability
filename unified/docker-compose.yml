@@ -63,6 +63,7 @@ services:
       - STATS_QUEUE=reliability-stats
       - STATS_EXCHANGE=stats-exchange
       - STATS_REPORT_INTERVAL=30000
+      - PORT=3000
     networks:
       - rabbitmq-ha_rabbitmq-network
     deploy:
@@ -76,6 +77,12 @@ services:
           memory: 128M
         reservations:
           memory: 64M
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.stats.rule=Host(`stats.swarm-test`)"
+        - "traefik.http.routers.stats.entrypoints=web"
+        - "traefik.http.services.stats.loadbalancer.server.port=3000"
+        - "traefik.docker.network=rabbitmq-ha_rabbitmq-network"
 
 networks:
   rabbitmq-ha_rabbitmq-network:
