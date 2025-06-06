@@ -8,6 +8,7 @@
     "start:consumer": "MODE=consumer node index.js",
     "start:producer": "MODE=producer node index.js",
     "start:both": "MODE=both node index.js",
+    "start:stats": "MODE=stats node index.js",
     "start:prod": "NODE_ENV=production node index.js",
     "start:dev": "NODE_ENV=development node index.js",
     "dev": "nodemon index.js",

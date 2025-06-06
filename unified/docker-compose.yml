@@ -37,6 +37,8 @@ services:
       - QUEUE_NAME=test-queue
       - EXCHANGE_NAME=test-exchange
       - ROUTING_KEY=test.message
+      - STATS_QUEUE=reliability-stats
+      - STATS_EXCHANGE=stats-exchange
     networks:
       - rabbitmq-ha_rabbitmq-network
     deploy:
@@ -50,8 +52,30 @@ services:
           memory: 128M
         reservations:
           memory: 64M
-  
 
+  # 可靠性統計收集器
+  rabbitmq-stats:
+    image: kevinypfan/rabbitmq-tester:latest
+    environment:
+      - MODE=stats
+      - NODE_ENV=production
+      - RABBITMQ_URL=amqp://admin:test1234@rabbitmq:5672
+      - STATS_QUEUE=reliability-stats
+      - STATS_EXCHANGE=stats-exchange
+      - STATS_REPORT_INTERVAL=30000
+    networks:
+      - rabbitmq-ha_rabbitmq-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
 
 networks:
   rabbitmq-ha_rabbitmq-network:

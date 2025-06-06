@@ -31,13 +31,21 @@ class RabbitMQClient {
     this.reconnectDelay = 5000;
 
     // 設定參數
-    this.mode = process.env.MODE || "consumer"; // consumer, producer, both
+    this.mode = process.env.MODE || "consumer"; // consumer, producer, both, stats
     this.queueName = process.env.QUEUE_NAME || "test-queue";
     this.exchangeName = process.env.EXCHANGE_NAME || "test-exchange";
     this.routingKey = process.env.ROUTING_KEY || "test.message";
     this.clientId =
       process.env.HOSTNAME ||
       `client-${Math.random().toString(36).substr(2, 9)}`;
+
+    // 可靠性監控相關
+    this.sequenceNumber = 0;
+    this.statsQueueName = process.env.STATS_QUEUE || "reliability-stats";
+    this.statsExchangeName = process.env.STATS_EXCHANGE || "stats-exchange";
+    this.receivedSequences = new Set();
+    this.lastReceivedSequence = 0;
+    this.statsBuffer = [];
 
     // RabbitMQ 連接設定
     this.rabbitmqUrl =
@@ -125,12 +133,17 @@ class RabbitMQClient {
 
   async setupInfrastructure() {
     try {
-      // 宣告 Exchange
+      // 宣告主要 Exchange
       await this.channel.assertExchange(this.exchangeName, "topic", {
         durable: true,
       });
 
-      // 宣告 Queue
+      // 宣告統計 Exchange
+      await this.channel.assertExchange(this.statsExchangeName, "topic", {
+        durable: true,
+      });
+
+      // 宣告主要 Queue
       const queueOptions = {
         durable: true,
         arguments: {
@@ -142,17 +155,32 @@ class RabbitMQClient {
         queueOptions
       );
 
-      // 綁定 Queue 到 Exchange
+      // 宣告統計 Queue
+      const statsQueue = await this.channel.assertQueue(
+        this.statsQueueName,
+        queueOptions
+      );
+
+      // 綁定主要 Queue 到 Exchange
       await this.channel.bindQueue(
         queue.queue,
         this.exchangeName,
         this.routingKey
       );
 
+      // 綁定統計 Queue 到統計 Exchange
+      await this.channel.bindQueue(
+        statsQueue.queue,
+        this.statsExchangeName,
+        "stats.*"
+      );
+
       this.logger.info("Infrastructure setup completed", {
         exchange: this.exchangeName,
         queue: queue.queue,
         routingKey: this.routingKey,
+        statsExchange: this.statsExchangeName,
+        statsQueue: statsQueue.queue,
       });
 
       return queue.queue;
@@ -222,13 +250,106 @@ class RabbitMQClient {
 
   async processMessage(content) {
     const processingTime = Math.random() * 1000;
+    const receivedTimestamp = new Date().toISOString();
+    
     this.logger.debug("Processing message", {
       processingTime: Math.round(processingTime),
       content: typeof content === "string" ? content.substring(0, 50) : content,
     });
 
+    // 可靠性監控：分析訊息
+    let reliabilityStats = null;
+    if (content && typeof content === 'object' && content.sequenceNumber) {
+      reliabilityStats = this.analyzeMessageReliability(content, receivedTimestamp);
+    }
+
     await new Promise((resolve) => setTimeout(resolve, processingTime));
+    
+    // 發送統計資料到統計 queue
+    if (reliabilityStats) {
+      await this.sendReliabilityStats(reliabilityStats);
+    }
+    
     this.logger.debug("Message processing completed");
+  }
+
+  analyzeMessageReliability(message, receivedTimestamp) {
+    const { sequenceNumber, clientId, messageId, timestamp: sentTimestamp } = message;
+    
+    // 檢測重複訊息
+    const isDuplicate = this.receivedSequences.has(messageId);
+    if (!isDuplicate) {
+      this.receivedSequences.add(messageId);
+    }
+
+    // 檢測亂序訊息
+    const isOutOfOrder = sequenceNumber <= this.lastReceivedSequence;
+    if (sequenceNumber > this.lastReceivedSequence) {
+      this.lastReceivedSequence = sequenceNumber;
+    }
+
+    // 計算傳輸延遲
+    const sentTime = new Date(sentTimestamp);
+    const receivedTime = new Date(receivedTimestamp);
+    const latency = receivedTime - sentTime;
+
+    return {
+      messageId,
+      sequenceNumber,
+      producerClientId: clientId,
+      consumerClientId: this.clientId,
+      sentTimestamp,
+      receivedTimestamp,
+      latency,
+      isDuplicate,
+      isOutOfOrder,
+      consumerMode: this.mode,
+      originalMessage: {
+        type: message.type || 'unknown',
+        content: typeof message.content === 'string' ? message.content.substring(0, 100) : message.content
+      }
+    };
+  }
+
+  async sendReliabilityStats(stats) {
+    try {
+      if (!this.channel) {
+        this.logger.warn("Cannot send stats - channel not available");
+        return;
+      }
+
+      const statsMessage = {
+        type: 'message_received',
+        stats,
+        timestamp: new Date().toISOString(),
+        reporterId: this.clientId
+      };
+
+      const messageBuffer = Buffer.from(JSON.stringify(statsMessage));
+      
+      const published = this.channel.publish(
+        this.statsExchangeName,
+        'stats.message_received',
+        messageBuffer,
+        {
+          persistent: true,
+          timestamp: Date.now(),
+          appId: this.clientId,
+        }
+      );
+
+      if (published) {
+        this.logger.debug("Reliability stats sent", {
+          messageId: stats.messageId,
+          sequenceNumber: stats.sequenceNumber,
+          isDuplicate: stats.isDuplicate,
+          isOutOfOrder: stats.isOutOfOrder,
+          latency: stats.latency
+        });
+      }
+    } catch (error) {
+      this.logger.error("Failed to send reliability stats", { error: error.message });
+    }
   }
 
   // Producer 相關方法
@@ -237,15 +358,23 @@ class RabbitMQClient {
       throw new Error("Channel 尚未建立");
     }
 
-    const messageBuffer = Buffer.from(
-      JSON.stringify({
-        ...message,
-        clientId: this.clientId,
-        timestamp: new Date().toISOString(),
-        messageId: Math.random().toString(36).substr(2, 9),
-      })
-    );
+    // 增加序列號
+    this.sequenceNumber++;
+    const messageId = `${this.clientId}-${this.sequenceNumber}`;
 
+    const enhancedMessage = {
+      ...message,
+      clientId: this.clientId,
+      timestamp: new Date().toISOString(),
+      messageId: messageId,
+      sequenceNumber: this.sequenceNumber,
+      producerInfo: {
+        mode: this.mode,
+        hostname: process.env.HOSTNAME || 'unknown'
+      }
+    };
+
+    const messageBuffer = Buffer.from(JSON.stringify(enhancedMessage));
     const publishRoutingKey = routingKey || this.routingKey;
 
     const published = this.channel.publish(
@@ -254,7 +383,7 @@ class RabbitMQClient {
       messageBuffer,
       {
         persistent: true,
-        messageId: Math.random().toString(36).substr(2, 9),
+        messageId: messageId,
         timestamp: Date.now(),
         appId: this.clientId,
       }
@@ -264,12 +393,14 @@ class RabbitMQClient {
       this.logger.info("Message published successfully", {
         exchange: this.exchangeName,
         routingKey: publishRoutingKey,
+        messageId: messageId,
+        sequenceNumber: this.sequenceNumber,
         messageSize: messageBuffer.length,
       });
-      return true;
+      return { success: true, sequenceNumber: this.sequenceNumber, messageId };
     } else {
       this.logger.warn("Message publish failed - buffer full");
-      return false;
+      return { success: false, sequenceNumber: this.sequenceNumber, messageId };
     }
   }
 
@@ -336,6 +467,152 @@ class RabbitMQClient {
       this.startProducerAPI();
       this.startAutoSender();
     }
+
+    if (this.mode === "stats") {
+      await this.startStatsCollection();
+    }
+  }
+
+  // 統計收集相關方法
+  async startStatsCollection() {
+    try {
+      const queueName = this.statsQueueName;
+      
+      this.logger.info("Starting statistics collection", {
+        queue: queueName,
+        clientId: this.clientId,
+      });
+
+      await this.channel.consume(
+        queueName,
+        async (message) => {
+          if (message) {
+            try {
+              const statsData = JSON.parse(message.content.toString());
+              await this.processStatsMessage(statsData);
+              this.channel.ack(message);
+            } catch (error) {
+              this.logger.error("Failed to process stats message", {
+                error: error.message,
+              });
+              this.channel.nack(message, false, false); // 丟棄錯誤訊息
+            }
+          }
+        },
+        {
+          noAck: false,
+          consumerTag: `${this.clientId}-stats-consumer`,
+        }
+      );
+
+      // 定期產生統計報告
+      this.startPeriodicReporting();
+      
+    } catch (error) {
+      this.logger.error("Failed to start stats collection", { error: error.message });
+      throw error;
+    }
+  }
+
+  async processStatsMessage(statsData) {
+    if (statsData.type === 'message_received' && statsData.stats) {
+      const stats = statsData.stats;
+      
+      this.logger.info("Reliability event recorded", {
+        messageId: stats.messageId,
+        sequenceNumber: stats.sequenceNumber,
+        producer: stats.producerClientId,
+        consumer: stats.consumerClientId,
+        latency: `${stats.latency}ms`,
+        isDuplicate: stats.isDuplicate,
+        isOutOfOrder: stats.isOutOfOrder,
+      });
+
+      // 儲存到統計緩衝區進行分析
+      this.statsBuffer.push({
+        ...stats,
+        processedAt: new Date().toISOString()
+      });
+
+      // 如果緩衝區太大，移除舊的資料
+      if (this.statsBuffer.length > 10000) {
+        this.statsBuffer = this.statsBuffer.slice(-5000);
+      }
+    }
+  }
+
+  startPeriodicReporting() {
+    const reportInterval = parseInt(process.env.STATS_REPORT_INTERVAL) || 30000; // 30秒
+    
+    this.logger.info("Starting periodic reliability reporting", { 
+      interval: `${reportInterval}ms` 
+    });
+
+    setInterval(() => {
+      this.generateReliabilityReport();
+    }, reportInterval);
+  }
+
+  generateReliabilityReport() {
+    if (this.statsBuffer.length === 0) {
+      this.logger.debug("No statistics data available for reporting");
+      return;
+    }
+
+    const now = new Date();
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+    
+    // 過濾最近5分鐘的資料
+    const recentStats = this.statsBuffer.filter(stat => 
+      new Date(stat.receivedTimestamp) > fiveMinutesAgo
+    );
+
+    if (recentStats.length === 0) {
+      this.logger.debug("No recent statistics data for reporting");
+      return;
+    }
+
+    // 計算統計指標
+    const totalMessages = recentStats.length;
+    const duplicateMessages = recentStats.filter(s => s.isDuplicate).length;
+    const outOfOrderMessages = recentStats.filter(s => s.isOutOfOrder).length;
+    const latencies = recentStats.map(s => s.latency).filter(l => l >= 0);
+    
+    const avgLatency = latencies.length > 0 ? 
+      latencies.reduce((a, b) => a + b, 0) / latencies.length : 0;
+    const maxLatency = latencies.length > 0 ? Math.max(...latencies) : 0;
+    const minLatency = latencies.length > 0 ? Math.min(...latencies) : 0;
+
+    // 按 producer 分組統計
+    const producerStats = {};
+    recentStats.forEach(stat => {
+      const producer = stat.producerClientId;
+      if (!producerStats[producer]) {
+        producerStats[producer] = { count: 0, sequences: [] };
+      }
+      producerStats[producer].count++;
+      producerStats[producer].sequences.push(stat.sequenceNumber);
+    });
+
+    this.logger.info("=== Reliability Report (Last 5 minutes) ===", {
+      period: "5 minutes",
+      totalMessages,
+      duplicateMessages,
+      duplicateRate: `${(duplicateMessages/totalMessages*100).toFixed(2)}%`,
+      outOfOrderMessages,
+      outOfOrderRate: `${(outOfOrderMessages/totalMessages*100).toFixed(2)}%`,
+      latencyStats: {
+        avg: `${avgLatency.toFixed(0)}ms`,
+        min: `${minLatency}ms`,
+        max: `${maxLatency}ms`
+      },
+      producers: Object.keys(producerStats).length,
+      producerBreakdown: Object.entries(producerStats).map(([producer, stats]) => ({
+        producer,
+        messageCount: stats.count,
+        sequenceRange: `${Math.min(...stats.sequences)}-${Math.max(...stats.sequences)}`
+      }))
+    });
   }
 
   // Producer API 伺服器
