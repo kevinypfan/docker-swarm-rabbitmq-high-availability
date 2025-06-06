@@ -1,0 +1,296 @@
+version: '3.8'
+
+services:
+
+  traefik:
+    image: traefik:v2.10
+    command:
+      - "--api.insecure=true"
+      - "--api.dashboard=true"
+      - "--providers.docker.swarmMode=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.addEntryPointsLabels=true"
+      - "--metrics.prometheus.addServicesLabels=true"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - rabbitmq-network
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  etcd1:
+    image: bitnami/etcd:3.5.21
+    hostname: etcd1
+    environment:
+      # 節點名稱
+      - ETCD_NAME=etcd1
+      # 資料目錄
+      - ETCD_DATA_DIR=/bitnami/etcd/data
+      # 客戶端連線設定
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd1:2379
+      # 節點間通訊設定
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd1:2380
+      # Cluster 配置
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster-token
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      # 安全性設定 (開發環境用)
+      - ALLOW_NONE_AUTHENTICATION=yes
+    networks:
+      - rabbitmq-network
+    volumes:
+      - etcd1-data:/bitnami/etcd/data
+    deploy:
+      # labels:
+      #   - "prometheus.metrics.port=2379"
+      placement:
+        constraints:
+          - node.labels.etcd-node == node1
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        
+
+  etcd2:
+    image: bitnami/etcd:3.5.21
+    hostname: etcd2
+    environment:
+      # 節點名稱
+      - ETCD_NAME=etcd2
+      # 資料目錄
+      - ETCD_DATA_DIR=/bitnami/etcd/data
+      # 客戶端連線設定
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd2:2379
+      # 節點間通訊設定
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd2:2380
+      # Cluster 配置
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster-token
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      # 安全性設定 (開發環境用)
+      - ALLOW_NONE_AUTHENTICATION=yes
+    networks:
+      - rabbitmq-network
+    volumes:
+      - etcd2-data:/bitnami/etcd/data
+    deploy:
+      # labels:
+      #   - "prometheus.metrics.port=2379"
+      placement:
+        constraints:
+          - node.labels.etcd-node == node2
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  etcd3:
+    image: bitnami/etcd:3.5.21
+    hostname: etcd3
+    environment:
+      # 節點名稱
+      - ETCD_NAME=etcd3
+      # 資料目錄
+      - ETCD_DATA_DIR=/bitnami/etcd/data
+      # 客戶端連線設定
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd3:2379
+      # 節點間通訊設定
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd3:2380
+      # Cluster 配置
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster-token
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      # 安全性設定 (開發環境用)
+      - ALLOW_NONE_AUTHENTICATION=yes
+    networks:
+      - rabbitmq-network
+    volumes:
+      - etcd3-data:/bitnami/etcd/data
+    deploy:
+      # labels:
+      #   - "prometheus.metrics.port=2379"
+      placement:
+        constraints:
+          - node.labels.etcd-node == node3
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  rabbitmq:
+    image: rabbitmq:4.1.0-management-alpine
+    hostname: "{{.Node.Hostname}}.{{.Service.Name}}"
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: test1234
+      RABBITMQ_USE_LONGNAME: "true"
+      RABBITMQ_ERLANG_COOKIE: "SWARM-COOKIE-SECRET-KEY-HERE"
+      RABBITMQ_NODENAME: "rabbit@{{.Node.Hostname}}.{{.Service.Name}}"
+    configs:
+      - source: rabbitmq_config_rev2
+        target: /etc/rabbitmq/rabbitmq.conf
+      - source: rabbitmq_enabled_plugins
+        target: /etc/rabbitmq/enabled_plugins
+    networks:
+      - rabbitmq-network
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - rabbitmq_logs:/var/log/rabbitmq
+    deploy:
+      endpoint_mode: dnsrr
+      replicas: 3
+      placement:
+        max_replicas_per_node: 1 
+      update_config:
+        parallelism: 1
+        delay: 30s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 15s
+        max_attempts: 3
+        window: 60s
+      labels:
+        - "traefik.enable=true"
+        
+        # 主要 UI 路由
+        - "traefik.http.routers.rabbitmq-ui.rule=PathPrefix(`/rabbitmq`) && !PathPrefix(`/rabbitmq/api`)"
+        - "traefik.http.routers.rabbitmq-ui.entrypoints=web"
+        - "traefik.http.routers.rabbitmq-ui.service=rabbitmq-ui"
+        - "traefik.http.services.rabbitmq-ui.loadbalancer.server.port=15672"
+        
+        # API 路由 - 保持 /api 路徑
+        - "traefik.http.routers.rabbitmq-api.rule=PathPrefix(`/rabbitmq/api`)"
+        - "traefik.http.routers.rabbitmq-api.entrypoints=web"
+        - "traefik.http.routers.rabbitmq-api.service=rabbitmq-api"
+        - "traefik.http.services.rabbitmq-api.loadbalancer.server.port=15672"
+        
+        # UI 中介軟體
+        - "traefik.http.middlewares.rabbitmq-ui-strip.stripprefix.prefixes=/rabbitmq"
+        - "traefik.http.middlewares.rabbitmq-ui-redirect.redirectregex.regex=^(.*)/rabbitmq$$"
+        - "traefik.http.middlewares.rabbitmq-ui-redirect.redirectregex.replacement=$${1}/rabbitmq/"
+        - "traefik.http.routers.rabbitmq-ui.middlewares=rabbitmq-ui-redirect,rabbitmq-ui-strip"
+        
+        # API 中介軟體 - 重寫 /rabbitmq/api 為 /api
+        - "traefik.http.middlewares.rabbitmq-api-strip.stripprefix.prefixes=/rabbitmq"
+        - "traefik.http.routers.rabbitmq-api.middlewares=rabbitmq-api-strip"
+        
+        - "prometheus.metrics.port=15692"
+      resources:
+        limits:
+          cpus: "1"
+          memory: "1g"
+        reservations:
+          cpus: "0.5"
+          memory: "512m"
+
+  prometheus:
+    image: prom/prometheus
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+    ports:
+      - "3002:9090"
+    networks:
+      - rabbitmq-network
+    user: root
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - rabbitmq-network
+    configs:
+      - source: datasources_config_rev1
+        target: /etc/grafana/provisioning/datasources/datasources.yaml
+      - source: dashboards_config_rev1
+        target: /etc/grafana/provisioning/dashboards/dashboards.yaml
+      - source: dashboard_1860_rev37
+        target: /var/lib/grafana/dashboards/1860_rev37.json
+      - source: dashboard_13702_rev3
+        target: /var/lib/grafana/dashboards/13702_rev3.json
+      - source: dashboard_17023_rev1
+        target: /var/lib/grafana/dashboards/17023_rev1.json
+      - source: dashboard_18345_rev1
+        target: /var/lib/grafana/dashboards/18345_rev1.json
+      - source: dashboard_10991_rev15
+        target: /var/lib/grafana/dashboards/10991_rev15.json
+      - source: dashboard_11340_rev8
+        target: /var/lib/grafana/dashboards/11340_rev8.json
+      - source: dashboard_21473_rev3
+        target: /var/lib/grafana/dashboards/21473_rev3.json
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+networks:
+  rabbitmq-network:
+    driver: overlay
+
+configs:
+  rabbitmq_config_rev2:
+    file: ./rabbitmq.conf
+  rabbitmq_enabled_plugins:
+    file: ./enabled_plugins
+  prometheus_config:
+    file: ./prometheus.yml
+  datasources_config_rev1:
+    file: ./grafana/provisioning/datasources/datasources.yml
+  dashboards_config_rev1:
+    file: ./grafana/provisioning/dashboards/dashboards.yml
+  dashboard_1860_rev37:
+    file: ./grafana/dashboards/1860_rev37.json
+  dashboard_13702_rev3:
+    file: ./grafana/dashboards/13702_rev3.json
+  dashboard_17023_rev1:
+    file: ./grafana/dashboards/17023_rev1.json
+  dashboard_18345_rev1:
+    file: ./grafana/dashboards/18345_rev1.json
+  dashboard_10991_rev15:
+    file: ./grafana/dashboards/10991_rev15.json
+  dashboard_11340_rev8:
+    file: ./grafana/dashboards/11340_rev8.json
+  dashboard_21473_rev3:
+    file: ./grafana/dashboards/21473_rev3.json
+
+
+volumes:
+  rabbitmq_data:
+  rabbitmq_logs:
+  etcd1-data:
+  etcd2-data:
+  etcd3-data:
