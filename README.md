@@ -1,226 +1,319 @@
-- `AUTO_SEND`: 是否啟用自動發送 (Producer)
-- `AUTO_SEND_INTERVAL`: 自動發送間隔 (毫秒)
+# RabbitMQ High Availability Testing Project
 
-### Docker Compose 配置
-- `replicas`: 服務副本數量
-- `resources`: CPU 和記憶體限制
-- `restart_policy`: 重啟策略
-- `update_config`: 更新策略
+一個專為測試 RabbitMQ 高可用性設計的完整測試平台，提供訊息可靠性監控、故障恢復測試和效能分析。
+
+## 🚀 專案特色
+
+- **🐰 RabbitMQ 高可用性測試** - 支援 Consul 和 etcd 兩種服務發現機制
+- **📊 訊息可靠性監控** - 內建遺失檢測、重複檢測、延遲分析
+- **🌐 即時統計儀表板** - Web 介面展示即時可靠性指標
+- **🔄 故障恢復測試** - 模擬節點故障、網路分區等場景
+- **🐳 Docker Swarm 部署** - 完整的容器化部署解決方案
+- **📈 監控整合** - Prometheus + Grafana 監控堆疊
+
+## 📋 專案架構
+
+```mermaid
+graph TB
+    subgraph "部署選項"
+        A[Consul 配置]
+        B[etcd 配置] 
+        C[統一應用程式<br/>🌟 推薦]
+    end
+    
+    subgraph "核心服務"
+        D[RabbitMQ 叢集<br/>3節點 + Quorum Queues]
+        E[訊息可靠性監控<br/>遺失檢測 + 統計分析]
+        F[統計儀表板<br/>即時監控介面]
+    end
+    
+    subgraph "監控堆疊"
+        G[Prometheus<br/>指標收集]
+        H[Grafana<br/>視覺化儀表板]
+        I[Traefik<br/>負載平衡器]
+    end
+    
+    A --> D
+    B --> D
+    C --> D
+    C --> E
+    E --> F
+    D --> G
+    G --> H
+    
+    classDef recommended fill:#e8f5e8,stroke:#4caf50,stroke-width:3px
+    classDef core fill:#e3f2fd,stroke:#2196f3
+    classDef monitoring fill:#fff3e0,stroke:#ff9800
+    
+    class C recommended
+    class D,E,F core
+    class G,H,I monitoring
+```
+
+## 📁 專案結構
+
+```
+rabbitmq-ha/
+├── README.md                 # 專案說明
+├── start.sh                  # 快速啟動腳本
+├── stop.sh                   # 停止腳本
+├── 
+├── consul/                   # Consul 配置版本
+│   ├── docker-compose.yml    # Docker Swarm 配置
+│   ├── rabbitmq.conf        # RabbitMQ 配置
+│   ├── prometheus.yml       # Prometheus 配置
+│   └── grafana/             # Grafana 儀表板
+│       ├── dashboards/      # 預設儀表板
+│       └── provisioning/    # 自動配置
+├── 
+├── etcd/                     # etcd 配置版本
+│   ├── docker-compose.yml    # Docker Swarm 配置
+│   ├── rabbitmq.conf        # RabbitMQ 配置
+│   ├── prometheus.yml       # Prometheus 配置
+│   └── grafana/             # Grafana 儀表板 + etcd 專用
+│
+└── unified/                  # 🌟 統一應用程式 (推薦)
+    ├── index.js             # 統一的 Producer/Consumer/Stats
+    ├── package.json         # 依賴管理
+    ├── Dockerfile           # 容器配置
+    ├── docker-compose.yml   # 部署配置
+    ├── build.sh             # 建置腳本
+    ├── test-*.sh            # 測試腳本
+    └── README.md            # 詳細使用說明
+```
+
+## 🌟 推薦使用：統一應用程式
+
+**`unified/` 是推薦的使用方式**，提供單一 Docker 映像支援多種模式：
+
+### 🎯 支援模式
+
+- **`consumer`** - 純 Consumer 模式
+- **`producer`** - 純 Producer 模式 + REST API
+- **`both`** - 混合模式 (測試用)
+- **`stats`** - 統計收集器 + Web 儀表板
+
+### 🔍 訊息可靠性監控
+
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant R as RabbitMQ
+    participant C as Consumer  
+    participant S as Stats Service
+    participant W as Web Dashboard
+    
+    P->>R: 1. 發送訊息 (含序號)
+    P->>S: 2. 心跳 (當前序號+總數)
+    R->>C: 3. 傳遞訊息
+    C->>C: 4. 檢測重複/亂序/延遲
+    C->>S: 5. 統計資料
+    S->>S: 6. 計算遺失率
+    S->>W: 7. 即時統計
+    
+    Note over S: 比對心跳與實際接收<br/>檢測訊息遺失
+```
+
+### 📊 監控指標
+
+| 指標 | 說明 | 警告閾值 |
+|------|------|----------|
+| **遺失率** | 未收到的訊息比例 | > 0.1% |
+| **重複率** | 重複接收的訊息比例 | > 5% |
+| **亂序率** | 亂序接收的訊息比例 | > 5% |
+| **平均延遲** | 訊息傳輸延遲 | > 1000ms |
+
+## 🚀 快速開始
+
+### 1. 基本部署 (推薦)
+
+```bash
+# 啟動完整環境 (使用 Consul 配置)
+./start.sh
+
+# 訪問服務
+open http://stats.swarm-test        # 統計儀表板
+open http://producer.swarm-test     # Producer API
+open http://rabbitmq.swarm-test     # RabbitMQ Management
+open http://localhost:3000          # Grafana
+```
+
+### 2. 統一應用程式測試
+
+```bash
+cd unified
+
+# 本地測試
+npm install
+./test-reliability.sh       # 可靠性測試
+./test-stats-api.sh         # API 測試
+./test-message-loss.sh      # 遺失檢測測試
+
+# Docker 部署
+./build.sh latest
+docker stack deploy -c docker-compose.yml rabbitmq-ha
+```
+
+### 3. 特定配置部署
+
+```bash
+# 使用 etcd 配置
+cd etcd && docker stack deploy -c docker-compose.yml rabbitmq-ha
+
+# 使用 Consul 配置  
+cd consul && docker stack deploy -c docker-compose.yml rabbitmq-ha
+```
+
+## 🌐 訪問端點
+
+| 服務 | URL | 說明 |
+|------|-----|------|
+| **統計儀表板** | http://stats.swarm-test | 訊息可靠性監控 |
+| **Producer API** | http://producer.swarm-test | 訊息發送 API |
+| **RabbitMQ Management** | http://rabbitmq.swarm-test | RabbitMQ 管理介面 |
+| **Grafana** | http://localhost:3000 | 系統監控儀表板 |
+| **Prometheus** | http://localhost:3002 | 指標數據庫 |
+| **Traefik Dashboard** | http://localhost:8080 | 負載平衡器狀態 |
+| **Consul** | http://localhost:3001 | 服務發現 (僅 Consul 配置) |
+
+**預設帳號**: admin / test1234 (RabbitMQ)
+
+## 📊 監控和測試
+
+### Grafana 儀表板
+
+專案包含預設的 Grafana 儀表板：
+
+- **RabbitMQ Overview** - RabbitMQ 叢集概覽
+- **RabbitMQ Cluster** - 叢集詳細狀態  
+- **Node Exporter** - 系統資源監控
+- **Container Monitoring** - 容器狀態監控
+
+### 測試場景
+
+1. **基本功能測試**
+   ```bash
+   cd unified && ./test-reliability.sh
+   ```
+
+2. **故障恢復測試**
+   ```bash
+   # 停止一個 RabbitMQ 節點
+   docker service scale rabbitmq-ha_rabbitmq=2
+   
+   # 觀察故障轉移
+   open http://stats.swarm-test
+   ```
+
+3. **負載測試**
+   ```bash
+   # 擴展服務
+   docker service scale rabbitmq-ha_producer=10
+   docker service scale rabbitmq-ha_consumer=10
+   ```
+
+4. **訊息遺失測試**
+   ```bash
+   cd unified && ./test-message-loss.sh
+   ```
+
+## 🔧 配置選項
+
+### 環境變數
+
+| 變數 | 預設值 | 說明 |
+|------|--------|------|
+| `MODE` | `consumer` | 應用模式: consumer/producer/both/stats |
+| `RABBITMQ_URL` | - | RabbitMQ 連接字串 (支援多主機) |
+| `HEARTBEAT_INTERVAL` | `10000` | Producer 心跳間隔 (毫秒) |
+| `STATS_REPORT_INTERVAL` | `30000` | 統計報告間隔 (毫秒) |
+| `AUTO_SEND` | `false` | 自動發送測試訊息 |
+
+### Docker Swarm 配置
+
+```yaml
+# 服務擴展
+docker service scale rabbitmq-ha_consumer=5
+docker service scale rabbitmq-ha_producer=3
+docker service scale rabbitmq-ha_rabbitmq=3
+
+# 資源限制
+resources:
+  limits:
+    memory: 512M
+    cpus: "0.5"
+```
 
 ## 🚨 故障排除
 
 ### 常見問題
 
-1. **服務無法啟動**
+1. **檢查服務狀態**
    ```bash
-   # 檢查服務日誌
-   docker service logs rabbitmq-ha_rabbitmq
-   docker service logs rabbitmq-ha_consumer
-   docker service logs rabbitmq-ha_producer
+   docker service ls
+   docker service logs -f rabbitmq-ha_rabbitmq
+   docker service logs -f rabbitmq-ha_stats
    ```
 
-2. **RabbitMQ 叢集未形成**
+2. **檢查叢集狀態**
    ```bash
-   # 檢查 Consul 服務發現
-   curl http://localhost:3001/v1/catalog/service/rabbitmq
-   
-   # 進入 RabbitMQ 容器檢查叢集狀態
+   # RabbitMQ 叢集狀態
    docker exec -it $(docker ps -q -f name=rabbitmq-ha_rabbitmq) rabbitmqctl cluster_status
-   ```
-
-3. **Consumer 無法連接**
-   ```bash
-   # 檢查網路連通性
-   docker exec -it $(docker ps -q -f name=rabbitmq-ha_consumer) ping rabbitmq
    
-   # 檢查環境變數
-   docker service inspect rabbitmq-ha_consumer
+   # 服務發現 (Consul)
+   curl http://localhost:3001/v1/catalog/service/rabbitmq
    ```
 
-4. **Producer API 無法訪問**
+3. **重建環境**
    ```bash
-   # 檢查 Traefik 路由
-   curl http://localhost:8080/api/http/routers
-   
-   # 檢查服務標籤
-   docker service inspect rabbitmq-ha_producer
+   ./stop.sh
+   docker system prune -f
+   ./start.sh
    ```
 
-### 重建服務
-```bash
-# 完全重建
-docker stack rm rabbitmq-ha
-docker system prune -f
-docker stack deploy -c docker-compose.yml rabbitmq-ha
-```
+### 性能調優
 
-## 📚 參考資料
+- **增加 Consumer 數量**：提高訊息處理能力
+- **調整心跳間隔**：平衡監控精度和網路負載
+- **配置資源限制**：避免資源競爭
+- **使用 SSD 儲存**：提高 RabbitMQ 性能
 
-- [RabbitMQ 高可用性指南](https://www.rabbitmq.com/ha.html)
-- [Docker Swarm 文檔](https://docs.docker.com/engine/swarm/)
-- [Traefik 配置指南](https://doc.traefik.io/traefik/)
-- [Prometheus 監控](https://prometheus.io/docs/)
+## 🎯 架構對比
 
-## 🎯 測試場景
-
-### 場景 1: 基本功能測試
-1. 啟動服務
-2. 發送測試訊息
-3. 驗證 Consumer 接收訊息
-4. 檢查監控指標
-
-### 場景 2: 節點故障恢復
-1. 停止一個 RabbitMQ 節點
-2. 繼續發送訊息
-3. 驗證服務可用性
-4. 重啟節點並驗證自動恢復
-
-### 場景 3: 負載測試
-1. 擴展 Consumer 數量
-2. 發送大量訊息
-3. 監控處理效能
-4. 調整資源配置
-
-### 場景 4: 網路分區測試
-1. 模擬網路分區
-2. 觀察叢集行為
-3. 驗證 autoheal 策略
-4. 檢查資料一致性
-
-## 🏗 專案結構
-
-```
-rabbitmq-ha/
-├── README.md                 # 專案說明
-├── deploy/                   # 部署配置
-│   ├── docker-compose.yml    # Docker Swarm 配置
-│   ├── rabbitmq.conf        # RabbitMQ 配置
-│   ├── enabled_plugins      # RabbitMQ 插件
-│   └── prometheus.yml       # Prometheus 配置
-├── consumer/                 # 消費者服務
-│   ├── index.js             # 主程式
-│   ├── package.json         # 依賴管理
-│   ├── Dockerfile           # 容器配置
-│   └── .env                 # 環境變數
-└── producer/                 # 生產者服務
-    ├── index.js             # 主程式 + API
-    ├── package.json         # 依賴管理
-    ├── Dockerfile           # 容器配置
-    └── .env                 # 環境變數
-```
+| 配置 | 服務發現 | 特色 | 適用場景 |
+|------|----------|------|----------|
+| **consul** | Consul | 自動治癒、服務註冊 | 生產環境、大規模部署 |
+| **etcd** | etcd | 分散式一致性 | 需要強一致性的場景 |
+| **unified** | 無 | 可靠性監控、測試工具 | 測試、驗證、監控 |
 
 ## 🔄 持續改進
 
-### 未來功能
+### 已實現功能 ✅
+
+- ✅ 訊息序號追蹤和遺失檢測
+- ✅ 即時統計儀表板  
+- ✅ Producer 心跳機制
+- ✅ 多模式統一應用程式
+- ✅ Docker Swarm 部署
+- ✅ Grafana 監控儀表板
+
+### 未來計劃 📋
+
 - [ ] 死信佇列處理
-- [ ] 訊息優先級
-- [ ] 延遲訊息
-- [ ] 訊息追蹤
-- [ ] 自動測試套件
-- [ ] 效能基準測試
+- [ ] 訊息優先級測試
+- [ ] 延遲訊息功能
 - [ ] Kubernetes 部署配置
+- [ ] 自動化壓力測試
+- [ ] 更多服務發現選項
 
-### 貢獻指南
-1. Fork 專案
-2. 建立功能分支
-3. 提交變更
-4. 建立 Pull Request
+## 🤝 貢獻
 
-祝你測試愉快！🎉
-# RabbitMQ HA 專案架構更新
+歡迎提交 Issue 和 Pull Request！請查看各個目錄的 README 了解詳細說明。
 
-## 🎯 新增統一版本
+## 📄 授權
 
-新增了 `/unified` 目錄，包含了整合 Producer 和 Consumer 的統一應用程式。
+ISC License
 
-### 📁 專案結構
+---
 
-```
-rabbitmq-ha/
-├── consumer/          # 原始 Consumer 版本
-├── producer/          # 原始 Producer 版本
-├── unified/           # 🆕 統一版本 (推薦使用)
-│   ├── index.js
-│   ├── package.json
-│   ├── Dockerfile
-│   ├── README.md
-│   └── ...
-├── .github/           # 🆕 GitHub Actions 配置
-│   └── workflows/
-├── deploy/            # Docker Swarm 部署配置
-├── shared/            # 共享資源
-└── test*/             # 測試目錄
-```
-
-### ✨ 統一版本優勢
-
-1. **單一映像**: 只需要維護一個 Docker 映像
-2. **彈性部署**: 透過環境變數控制運行模式
-3. **程式碼重用**: 共享連接邏輯和重連機制
-4. **簡化維護**: 減少重複配置和依賴管理
-5. **自動化 CI/CD**: GitHub Actions 自動建置和發布
-
-### 🚀 推薦使用方式
-
-**Docker Hub 映像名稱**: `kevinypfan/rabbitmq-tester`
-
-```bash
-# 建置映像
-cd unified
-./build.sh
-
-# 推送到 Docker Hub (或使用 GitHub Actions)
-docker push kevinypfan/rabbitmq-tester:latest
-
-# 使用不同模式
-docker run -e MODE=consumer kevinypfan/rabbitmq-tester:latest
-docker run -e MODE=producer -p 3000:3000 kevinypfan/rabbitmq-tester:latest
-docker run -e MODE=both -p 3000:3000 kevinypfan/rabbitmq-tester:latest
-```
-
-### 📋 自動化部署
-
-專案包含完整的 GitHub Actions 配置：
-
-- **自動測試** - 每次推送和 PR 都會執行測試
-- **自動建置** - 支援多平台 (amd64, arm64)
-- **自動發布** - 推送到 Docker Hub
-- **版本管理** - 自動標籤管理
-
-詳見 `GITHUB_ACTIONS_SETUP.md` 了解設定方式。
-
-### 📋 遷移指南
-
-從原始的 consumer/producer 版本遷移到統一版本：
-
-1. 使用 `unified/` 目錄中的新版本
-2. 設定環境變數 `MODE` 來控制運行模式
-3. 更新 Docker Compose 配置使用新的映像名稱
-4. 設定 GitHub Actions secrets 來啟用自動發布
-5. 原始的 consumer 和 producer 目錄保留作為參考
-
-### 🔧 開發和測試
-
-```bash
-cd unified
-
-# 本地開發
-pnpm install
-pnpm run start:consumer    # Consumer 模式
-pnpm run start:producer    # Producer 模式
-pnpm run start:both        # 混合模式
-
-# 建置和測試
-./build.sh               # 建置 Docker 映像
-./test.sh                # 運行測試
-```
-
-### 🎯 特色功能
-
-- **單行日誌格式** - 便於閱讀和分析
-- **多平台支援** - 支援 amd64 和 arm64 架構
-- **健康檢查** - 內建 Docker 健康檢查
-- **優雅關閉** - 支援 SIGINT/SIGTERM 信號處理
-- **自動重連** - 內建 RabbitMQ 重連機制
-
-統一版本現在是專案的主要版本，建議新的部署都使用這個版本！
+🎉 **開始你的 RabbitMQ 高可用性測試之旅吧！**
