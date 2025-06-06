@@ -132,10 +132,10 @@ sequenceDiagram
 ./start.sh
 
 # 訪問服務
-open http://stats.swarm-test        # 統計儀表板
-open http://producer.swarm-test     # Producer API
-open http://rabbitmq.swarm-test     # RabbitMQ Management
-open http://localhost:3000          # Grafana
+open http://localhost/stats         # 統計儀表板
+open http://localhost/producer      # Producer API  
+open http://localhost/rabbitmq      # RabbitMQ Management
+open http://localhost/grafana       # Grafana
 ```
 
 ### 2. 統一應用程式測試
@@ -168,13 +168,13 @@ cd consul && docker stack deploy -c docker-compose.yml rabbitmq-ha
 
 | 服務 | URL | 說明 |
 |------|-----|------|
-| **統計儀表板** | http://stats.swarm-test | 訊息可靠性監控 |
-| **Producer API** | http://producer.swarm-test | 訊息發送 API |
-| **RabbitMQ Management** | http://rabbitmq.swarm-test | RabbitMQ 管理介面 |
-| **Grafana** | http://localhost:3000 | 系統監控儀表板 |
-| **Prometheus** | http://localhost:3002 | 指標數據庫 |
+| **統計儀表板** | http://localhost/stats | 訊息可靠性監控 |
+| **Producer API** | http://localhost/producer | 訊息發送 API |
+| **RabbitMQ Management** | http://localhost/rabbitmq | RabbitMQ 管理介面 |
+| **Grafana** | http://localhost/grafana | 系統監控儀表板 |
+| **Prometheus** | http://localhost/prometheus | 指標數據庫 |
 | **Traefik Dashboard** | http://localhost:8080 | 負載平衡器狀態 |
-| **Consul** | http://localhost:3001 | 服務發現 (僅 Consul 配置) |
+| **Consul** | http://localhost/consul | 服務發現 (僅 Consul 配置) |
 
 **預設帳號**: admin / test1234 (RabbitMQ)
 
@@ -202,7 +202,7 @@ cd consul && docker stack deploy -c docker-compose.yml rabbitmq-ha
    docker service scale rabbitmq-ha_rabbitmq=2
    
    # 觀察故障轉移
-   open http://stats.swarm-test
+   open http://localhost/stats
    ```
 
 3. **負載測試**

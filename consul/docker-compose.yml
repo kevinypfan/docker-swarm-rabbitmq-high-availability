@@ -35,6 +35,7 @@ services:
       -retry-join=tasks.consul-server
       -datacenter=dc1
       -data-dir=/consul/data
+      -ui-content-path=/consul/
     environment:
       - CONSUL_BIND_INTERFACE=eth0
     networks:
@@ -47,11 +48,13 @@ services:
         max_replicas_per_node: 1 
         constraints:
           - node.role == manager
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.consul.rule=PathPrefix(`/consul`)"
+        - "traefik.http.routers.consul.entrypoints=web"
+        - "traefik.http.routers.consul.service=consul"
+        - "traefik.http.services.consul.loadbalancer.server.port=8500"
     ports:
-      - target: 8500
-        published: 3001
-        protocol: tcp
-        mode: host  # 使用 host 模式避免網路問題
       - target: 8600
         published: 8600
         protocol: udp
@@ -138,11 +141,17 @@ services:
 
   prometheus:
     image: prom/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.external-url=http://localhost/prometheus'
+      - '--web.route-prefix=/prometheus'
     configs:
       - source: prometheus_config
         target: /etc/prometheus/prometheus.yml
-    ports:
-      - "3002:9090"
     networks:
       - rabbitmq-network
     user: root
@@ -152,15 +161,22 @@ services:
       placement:
         constraints:
           - node.role == manager
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.prometheus.rule=PathPrefix(`/prometheus`)"
+        - "traefik.http.routers.prometheus.entrypoints=web"
+        - "traefik.http.routers.prometheus.service=prometheus"
+        - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
 
   grafana:
     image: grafana/grafana
-    ports:
-      - "3000:3000"
+    environment:
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
     networks:
       - rabbitmq-network
     configs:
-      - source: datasources_config_rev1
+      - source: datasources_config_rev2
         target: /etc/grafana/provisioning/datasources/datasources.yaml
       - source: dashboards_config_rev1
         target: /etc/grafana/provisioning/dashboards/dashboards.yaml
@@ -180,6 +196,12 @@ services:
       placement:
         constraints:
           - node.role == manager
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.grafana.rule=PathPrefix(`/grafana`)"
+        - "traefik.http.routers.grafana.entrypoints=web"
+        - "traefik.http.routers.grafana.service=grafana"
+        - "traefik.http.services.grafana.loadbalancer.server.port=3000"
 
 networks:
   rabbitmq-network:
@@ -192,7 +214,7 @@ configs:
     file: ./enabled_plugins
   prometheus_config:
     file: ./prometheus.yml
-  datasources_config_rev1:
+  datasources_config_rev2:
     file: ./grafana/provisioning/datasources/datasources.yml
   dashboards_config_rev1:
     file: ./grafana/provisioning/dashboards/dashboards.yml

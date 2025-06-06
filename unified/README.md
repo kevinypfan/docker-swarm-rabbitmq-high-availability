@@ -290,9 +290,11 @@ docker stack deploy -c docker-compose.yml rabbitmq-ha
 ```
 
 部署後可透過以下網址訪問：
-- **統計儀表板**: http://stats.swarm-test
-- **Producer API**: http://producer.swarm-test
-- **RabbitMQ Management**: http://rabbitmq.swarm-test
+- **統計儀表板**: http://localhost/stats  
+- **Producer API**: http://localhost/producer
+- **RabbitMQ Management**: http://localhost/rabbitmq
+- **Grafana**: http://localhost/grafana
+- **Prometheus**: http://localhost/prometheus
 
 ## 📊 監控和日誌
 

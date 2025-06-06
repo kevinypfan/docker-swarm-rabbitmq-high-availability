@@ -28,6 +28,15 @@ services:
           memory: 128M
         reservations:
           memory: 64M
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.producer.rule=PathPrefix(`/producer`)"
+        - "traefik.http.routers.producer.entrypoints=web"
+        - "traefik.http.routers.producer.service=producer"
+        - "traefik.http.services.producer.loadbalancer.server.port=3000"
+        - "traefik.http.middlewares.producer-strip.stripprefix.prefixes=/producer"
+        - "traefik.http.routers.producer.middlewares=producer-strip"
+        - "traefik.docker.network=rabbitmq-ha_rabbitmq-network"
 
   rabbitmq-consumer:
     image: kevinypfan/rabbitmq-tester:latest
@@ -80,9 +89,12 @@ services:
           memory: 64M
       labels:
         - "traefik.enable=true"
-        - "traefik.http.routers.stats.rule=Host(`stats.swarm-test`)"
+        - "traefik.http.routers.stats.rule=PathPrefix(`/stats`)"
         - "traefik.http.routers.stats.entrypoints=web"
+        - "traefik.http.routers.stats.service=stats"
         - "traefik.http.services.stats.loadbalancer.server.port=3000"
+        - "traefik.http.middlewares.stats-strip.stripprefix.prefixes=/stats"
+        - "traefik.http.routers.stats.middlewares=stats-strip"
         - "traefik.docker.network=rabbitmq-ha_rabbitmq-network"
 
 networks:
